@@ -36,5 +36,23 @@
     });
   </script>
   {% block scripts %}{% endblock %}
+
+  <!-- Chat assistant — explains the numbers on screen -->
+  <button id="chat-bubble" type="button" aria-label="Ask about these numbers" title="Ask about these numbers">
+    <span class="ico">&#128172;</span>
+  </button>
+  <div id="chat-panel" hidden role="dialog" aria-label="Chat assistant">
+    <div id="chat-head">
+      <div><strong>Ask</strong> <span class="small">— explains what's on screen</span></div>
+      <button id="chat-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div id="chat-msgs"></div>
+    <form id="chat-form" autocomplete="off">
+      <input id="chat-input" type="text" placeholder="e.g. What does Sharpe mean here?" />
+      <button id="chat-send" type="submit" aria-label="Send">&#10148;</button>
+    </form>
+    <div id="chat-foot" class="small">Research only — not investment advice.</div>
+  </div>
+  <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
 </body>
 </html>
