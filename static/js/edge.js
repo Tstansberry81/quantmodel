@@ -38,13 +38,13 @@ function render(d){
   const p=d.performance||{}, m=p.model||{}, t=d.turnover||{};
   const alpha=(m.cagr??0)-((p.sp500||{}).cagr??0);
   document.getElementById('headline').innerHTML = [
-    ['CAGR (net)', fmtPct(m.cagr), cls(m.cagr)],
-    ['Sharpe', fmtN(m.sharpe,2), ''],
-    ['Max drawdown', fmtPct(m.max_drawdown), 'neg'],
-    ['Total return', fmtPct(m.total_return), cls(m.total_return)],
-    ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha)],
-    ['Turnover / yr', fmtN(t.annualized,1)+'×', ''],
-  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+    ['CAGR (net)', fmtPct(m.cagr), cls(m.cagr), 'Compound annual growth rate, after ~10bps trading costs'],
+    ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong)'],
+    ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss over the window'],
+    ['Total return', fmtPct(m.total_return), cls(m.total_return), 'Cumulative growth over the window'],
+    ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha), 'Annualized return above the S&P 500'],
+    ['Turnover / yr', fmtN(t.annualized,1)+'×', '', 'How many times the basket fully turns over per year'],
+  ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
   const c=d.curves;
   mkChart('edgeCurve',{type:'line',data:{labels:c.dates,datasets:[
@@ -67,12 +67,12 @@ function render(d){
   const wsel=(d.windows||[]).find(w=>w.w===WINDOW)||{};
   const ex=wsel.excess;
   document.getElementById('turnover').innerHTML = [
-    ['Turnover / rebalance', fmtPct(t.per_rebalance), ''],
-    ['Turnover / year', fmtN(t.annualized,1)+'×', ''],
-    ['Cost assumption', t.cost_bps+'bps', ''],
-    ['Gross → Net CAGR', fmtPct(t.gross_cagr)+' → '+fmtPct(t.net_cagr), ''],
-    ['Alpha vs S&P', (ex==null||isNaN(ex)?'—':(ex>=0?'+':'')+fmtPct(ex)), cls(ex)],
-  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+    ['Turnover / rebalance', fmtPct(t.per_rebalance), '', 'Fraction of the basket replaced each rebalance'],
+    ['Turnover / year', fmtN(t.annualized,1)+'×', '', 'Annualized portfolio turnover'],
+    ['Cost assumption', t.cost_bps+'bps', '', 'One-way trading cost charged on turnover'],
+    ['Gross → Net CAGR', fmtPct(t.gross_cagr)+' → '+fmtPct(t.net_cagr), '', 'Return before vs after trading costs'],
+    ['Alpha vs S&P', (ex==null||isNaN(ex)?'—':(ex>=0?'+':'')+fmtPct(ex)), cls(ex), 'Excess return over the S&P for the selected window'],
+  ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
   const s=d.spec||{};
   document.getElementById('costnote').textContent = (s.cost_bps||10)+'bps';

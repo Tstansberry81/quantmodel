@@ -5,6 +5,30 @@
 <h1>Edge Tracker <span class="small">— live paper portfolio</span></h1>
 <p class="sub">The current Edge book (today's picks) plus a running paper-trading log: each rebalance snapshot and its realized return vs the S&amp;P, tracked forward to validate the backtest out-of-sample.</p>
 
+<div class="panel">
+  <h2>How The Edge picks &mdash; the model</h2>
+  <p class="small">A <b>market-data-only</b> momentum model (no fundamentals). The core signal is
+  <b>acceleration</b> &mdash; whether a stock's momentum is speeding up or slowing down:</p>
+  <div style="font-family:ui-monospace,Menlo,Consolas,monospace;background:#0d1117;border:1px solid #21262d;
+              border-radius:8px;padding:14px 16px;margin:10px 0;font-size:15px;color:#e6edf3;overflow-x:auto">
+    accel&nbsp;=&nbsp;(&nbsp;P<sub>t</sub>&nbsp;/&nbsp;P<sub>t&minus;3mo</sub>&nbsp;&minus;&nbsp;1&nbsp;)
+    &nbsp;&minus;&nbsp;(&nbsp;P<sub>t&minus;3mo</sub>&nbsp;/&nbsp;P<sub>t&minus;6mo</sub>&nbsp;&minus;&nbsp;1&nbsp;)
+  </div>
+  <p class="small">i.e. the most recent 3-month return <i>minus</i> the prior 3-month return. Positive = momentum building.</p>
+  <p class="small" style="margin-top:14px"><b>Each rebalance (~2-month clock):</b></p>
+  <ol class="small" style="line-height:1.7;margin-top:4px">
+    <li><b>Universe</b> &mdash; top ~1,000 US names by market cap (Russell-1000 proxy).</li>
+    <li><b>Liquidity floor</b> &mdash; keep only names &ge; $2B market cap (tradeable size).</li>
+    <li><b>Rank</b> by the acceleration signal, highest first.</li>
+    <li><b>Correlation cap</b> &mdash; admit a name only if it's &le; 0.50 correlated with every holding already in the basket (so it never becomes eight versions of one bet).</li>
+    <li><b>Hold</b> the top 20, equal-weight.</li>
+    <li><b>Regime switch</b> &mdash; if the S&amp;P 500 is below its 200-day average, cut to 25% invested (rest in cash) to dodge crashes.</li>
+    <li><b>Costs</b> &mdash; returns are shown net of ~10bps trading costs.</li>
+    <li><i>Optional growth gate</i> &mdash; on the backtest page you can also require a minimum YoY revenue growth.</li>
+  </ol>
+  <p class="small" style="color:#8b949e;margin-top:10px">Honest caveats: history is survivorship-inflated (missing delisted names), short-window returns are lumpy and tail-driven, and the recent era has been unusually momentum-friendly &mdash; trust the risk-adjusted shape (Sharpe, drawdown) over the headline CAGR.</p>
+</div>
+
 <div id="status" class="loading">Loading the Edge tracker…</div>
 
 <div id="app" style="display:none">
