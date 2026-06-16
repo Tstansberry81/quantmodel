@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Quant Model{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◆</span>
+      <span>Quant Model</span>
+    </div>
+    <nav>
+      <a href="/" class="{% block nav_portfolio %}{% endblock %}">Portfolio</a>
+      <a href="/backtest" class="{% block nav_backtest %}{% endblock %}">Slow Burn</a>
+      <a href="/edge" class="{% block nav_edge %}{% endblock %}">The Edge</a>
+      <a href="/edge-tracker" class="{% block nav_edge_tracker %}{% endblock %}">Edge Tracker</a>
+    </nav>
+    <div class="meta" id="build-meta"></div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <span>Fundamentals: fiscal.ai &middot; Benchmarks &amp; gold: yfinance &middot; For research only — not investment advice.</span>
+  </footer>
+  <script>
+    fetch('/api/meta').then(r=>r.json()).then(m=>{
+      if(m && m.built_at){
+        document.getElementById('build-meta').textContent =
+          `${m.n_names||0} names · built ${m.built_at}`;
+      } else {
+        document.getElementById('build-meta').textContent = 'No data — run build_data.py';
+      }
+    });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

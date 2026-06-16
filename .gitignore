@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.claude/settings.local.json
+.env
+_openapi_*.json
+probe_api.py
+data_bundle.zip
+*.zip

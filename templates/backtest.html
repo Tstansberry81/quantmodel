@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Slow Burn · Quant Model{% endblock %}
+{% block nav_backtest %}active{% endblock %}
+{% block content %}
+<h1>Slow Burn <span class="small">— long-term fundamental model</span></h1>
+<p class="sub">Point-in-time cross-sectional backtest — fundamentals lagged to filing date, no lookahead in the signal. "Slow Burn" = the long-horizon, quality/fundamentals-driven engine (the counterpart to the short-term Edge).</p>
+
+<div class="controls" style="margin-bottom:10px">
+  <label class="small">Lookback window:</label>
+  <div class="btnrow" id="windowbtns">
+    <button data-w="1M">1M</button>
+    <button data-w="3M">3M</button>
+    <button data-w="6M">6M</button>
+    <button data-w="1Y">1Y</button>
+    <button data-w="2Y">2Y</button>
+    <button data-w="5Y">5Y</button>
+    <button data-w="10Y">10Y</button>
+    <button data-w="20Y">20Y</button>
+    <button data-w="MAX" class="active">Max</button>
+  </div>
+</div>
+<div class="controls" style="margin-bottom:18px">
+  <label class="small">Holding period:</label>
+  <div class="btnrow" id="holdbtns">
+    <button data-h="1W">Weekly</button>
+    <button data-h="2W">Biweekly</button>
+    <button data-h="1M" class="active">Monthly</button>
+    <button data-h="3M">Quarterly</button>
+    <button data-h="6M">Semiannual</button>
+    <button data-h="12M">Annual</button>
+  </div>
+  <span class="small" id="windownote"></span>
+</div>
+<div class="controls" style="margin-bottom:18px">
+  <label class="small">Weighting (Stage 3):</label>
+  <div class="btnrow" id="schemebtns">
+    <button data-s="equal" class="active">Equal</button>
+    <button data-s="inverse_vol">Inverse-Vol</button>
+    <button data-s="min_var">Min-Var</button>
+    <button data-s="max_sharpe">Max-Sharpe (MVO)</button>
+  </div>
+  <label class="small" style="margin-left:14px">Regime overlay (Stage 4):</label>
+  <div class="btnrow" id="regimebtns">
+    <button data-r="off" class="active">Off</button>
+    <button data-r="on">HMM on</button>
+  </div>
+</div>
+
+<div id="status" class="loading">Running backtest… (first run can take a moment)</div>
+
+<div id="app" style="display:none">
+  <div class="cards" id="headline"></div>
+
+  <div class="panel">
+    <h2>Growth of $1 — Model vs S&amp;P 500 vs Nasdaq <span class="small">(total return)</span></h2>
+    <div class="chartwrap"><canvas id="curveChart"></canvas></div>
+    <div class="legend">
+      <span><i class="dot" style="background:#3b82f6"></i>Model</span>
+      <span><i class="dot" style="background:#e6edf3"></i>S&amp;P 500 (TR)</span>
+      <span><i class="dot" style="background:#22c55e"></i>Nasdaq-100 (TR)</span>
+    </div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="panel">
+      <h2>Decile Monotonicity <span class="small">— mean fwd return by score decile</span></h2>
+      <div class="chartwrap"><canvas id="decileChart"></canvas></div>
+      <p class="small">A clean staircase from decile 0 (worst scores) to 9 (best) is the most convincing single chart of signal quality.</p>
+    </div>
+    <div class="panel">
+      <h2>Information Coefficient over time</h2>
+      <div class="chartwrap"><canvas id="icChart"></canvas></div>
+      <p class="small">IC = Spearman rank correlation of composite score vs the forward holding-period return, each rebalance. A consistently positive IC ≈ 0.03–0.05 is a real signal.</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Performance Metrics</h2>
+    <table id="perf">
+      <thead><tr><th>Strategy</th><th>Total Return</th><th>CAGR</th><th>Sharpe</th><th>Max Drawdown</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="turnover" class="cards" style="margin-top:14px"></div>
+    <p class="small" id="caveat" style="margin-top:12px"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/backtest.js') }}"></script>{% endblock %}

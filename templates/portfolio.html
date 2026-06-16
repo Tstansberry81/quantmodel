@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Portfolio · Quant Model{% endblock %}
+{% block nav_portfolio %}active{% endblock %}
+{% block content %}
+<h1>Curated Portfolio</h1>
+<p class="sub">10 equities ranked by composite z-score + a regime-driven gold sleeve.</p>
+
+<div id="status" class="loading">Computing portfolio…</div>
+
+<div id="app" style="display:none">
+  <div class="grid grid-2">
+    <div class="panel">
+      <h2>Holdings</h2>
+      <div id="holdings"></div>
+    </div>
+    <div class="panel">
+      <h2>Market Regime <span class="small">(HMM on S&amp;P 500)</span></h2>
+      <div id="regime"></div>
+      <div id="regime-stats" class="cards" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <h2 style="margin:0;flex:1" id="ranked-title">Ranked Candidates</h2>
+      <label class="small">Return horizon:</label>
+      <select id="horizon">
+        <option value="3M">3 Months</option>
+        <option value="6M">6 Months</option>
+        <option value="12M" selected>12 Months</option>
+        <option value="2Y">2 Years</option>
+        <option value="5Y">5 Years</option>
+        <option value="10Y">10 Years</option>
+      </select>
+    </div>
+    <div style="max-height:460px;overflow:auto">
+      <table id="ranked">
+        <thead><tr>
+          <th data-k="rank">#</th><th data-k="ticker">Ticker</th><th data-k="name">Name</th>
+          <th data-k="sector">Sector</th><th data-k="composite">Composite</th>
+          <th data-k="ret">Return</th><th data-k="vs">vs S&amp;P 500</th>
+          <th data-k="roic">ROIC</th><th data-k="pe">P/E</th>
+          <th data-k="sharpe">Sharpe</th><th data-k="vol">Vol σ</th><th data-k="screens">Screens</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <h2 style="margin:0;flex:1">Stock vs S&amp;P 500</h2>
+      <label class="small">Stock:</label>
+      <select id="stockpick"></select>
+      <label class="small">Window:</label>
+      <select id="vswindow">
+        <option value="3M">3M</option><option value="6M">6M</option>
+        <option value="12M" selected>12M</option><option value="2Y">2Y</option>
+        <option value="5Y">5Y</option><option value="10Y">10Y</option>
+      </select>
+      <label class="small">Scale:</label>
+      <select id="vsscale">
+        <option value="logarithmic" selected>Log</option>
+        <option value="linear">Linear</option>
+      </select>
+    </div>
+    <div class="chartwrap"><canvas id="vsChart"></canvas></div>
+    <div id="vsSummary" class="small" style="margin-top:10px"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Equation Editor <span class="small">— change any number in the formulas, then recompute</span></h2>
+
+    <div class="eq-composite" id="eq-composite"></div>
+
+    <h3 class="eq-h3">Screen &amp; factor equations <span class="small">— a stock must clear each inequality; the z-score of each factor feeds the composite</span></h3>
+    <div id="equations" class="eqgrid"></div>
+
+    <h3 class="eq-h3">Definitions</h3>
+    <div class="eq-defs" id="eq-defs"></div>
+
+    <div class="controls" style="margin-top:18px">
+      <button class="primary" id="apply">Apply &amp; Recompute</button>
+      <button class="ghost" id="reset">Reset to defaults</button>
+      <span class="small" id="eqnote"></span>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/portfolio.js') }}"></script>{% endblock %}

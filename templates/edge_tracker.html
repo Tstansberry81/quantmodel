@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Edge Tracker · Trading Model{% endblock %}
+{% block nav_edge_tracker %}active{% endblock %}
+{% block content %}
+<h1>Edge Tracker <span class="small">— live paper portfolio</span></h1>
+<p class="sub">The current Edge book (today's picks) plus a running paper-trading log: each rebalance snapshot and its realized return vs the S&amp;P, tracked forward to validate the backtest out-of-sample.</p>
+
+<div id="status" class="loading">Loading the Edge tracker…</div>
+
+<div id="app" style="display:none">
+  <div class="cards" id="headline"></div>
+
+  <div class="panel">
+    <h2>Current book <span class="small">— this rebalance's holdings</span></h2>
+    <table id="book">
+      <thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Signal (accel)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="small" id="bookmeta"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Paper-trading log <span class="small">— snapshots tracked forward vs S&amp;P</span></h2>
+    <table id="log">
+      <thead><tr><th>Opened</th><th>Closes</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="small" id="logmeta"></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/edge_tracker.js') }}"></script>{% endblock %}

@@ -1,0 +1,20 @@
+# Render Blueprint — deploys the Flask quant-model site as a live web service.
+# Create the service from this file: Render Dashboard -> New -> Blueprint -> pick the repo.
+services:
+  - type: web
+    name: quant-model
+    runtime: python
+    # The backtest loads a ~179MB panel into RAM (peaks ~0.8-1.2GB). The 512MB
+    # free/starter tiers will likely OOM — use a >=2GB plan. Drop to "starter"
+    # only if you slim the data bundle first.
+    plan: standard
+    buildCommand: "pip install -r requirements.txt && python fetch_data.py"
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 600"
+    healthCheckPath: /api/meta
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATA_URL          # set in the dashboard: direct-download URL of data_bundle.zip
+        sync: false
+      - key: FISCAL_API_KEY    # optional — only needed if you rebuild data on the host
+        sync: false
