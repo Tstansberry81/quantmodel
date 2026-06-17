@@ -279,27 +279,48 @@ def _bench_fwd_hold(series, d, hold):
 # ---- the robust, tradeable Edge: signal + liquidity + corr-cap + regime + costs
 EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=20, mcap_floor=2e9,
                  corr_cap=0.50, corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
-                 rev_growth_gate=0.0)   # optional: require YoY rev growth >= gate (0 = off)
+                 growth_mix=0.75,          # fraction of the basket drawn from the >=15%-rev-growth pool
+                 growth_thresh=0.15)       # YoY revenue-growth bar that defines a "growth" name
+
+
+def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh):
+    """Build the basket as K growth-gated picks + (n-K) pure-signal picks, where
+    K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth."""
+    def pick(frame, k):
+        if k <= 0 or len(frame) < 1:
+            return []
+        return (corr_cap_select(frame, asof=asof, n=k, weights=weights, cap=corr_cap,
+                                lookback=corr_lookback) if corr_cap
+                else select_topN(frame, n=k, weights=weights))
+    K = int(round(growth_mix * n))
+    gpick = []
+    if K > 0:
+        g = d[pd.to_numeric(d["rev_growth"], errors="coerce") >= growth_thresh]
+        gpick = pick(g, K)
+    sel = list(gpick)
+    for ck in pick(d, n + len(gpick)):          # fill remainder from the full pool
+        if len(sel) >= n:
+            break
+        if ck not in sel:
+            sel.append(ck)
+    return sel[:n]
 
 
 @lru_cache(maxsize=16)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
-               signal_key, rev_gate=0.0):
+               signal_key, growth_mix=0.0, growth_thresh=0.15):
     """Compute the full-history Edge once (cached). Returns the per-period gross
     & net returns, turnover, and aligned S&P / Nasdaq returns.
 
-    rev_gate > 0 optionally restricts candidates to point-in-time YoY revenue
-    growth >= rev_gate (a fundamentals tilt; off by default to keep it market-data-only)."""
+    growth_mix in [0,1] sets how much of the basket must come from names with YoY
+    revenue growth >= growth_thresh (a fundamentals tilt; 0 = pure market-data)."""
     weights = dict(signal_key)
     pan = load_edge_panel(hold=hold)
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
         d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
-        if rev_gate and rev_gate > 0:
-            d = d[d["rev_growth"] >= rev_gate]
-        cks = corr_cap_select(d, asof=pan.bdates[i], n=n, weights=weights,
-                              cap=corr_cap, lookback=corr_lookback) if corr_cap \
-            else select_topN(d, n=n, weights=weights)
+        cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
+                            growth_mix, growth_thresh)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur; holds.append(cks)
@@ -320,7 +341,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     bdates, gross, net, turn, spxf, ndxf = _edge_full(
         s["hold"], s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
         s["regime_expo"], s["cost_bps"], tuple(sorted(s["signal"].items())),
-        float(s.get("rev_growth_gate", 0.0) or 0.0))
+        float(s.get("growth_mix", 0.0) or 0.0), float(s.get("growth_thresh", 0.15)))
     T = len(net)
     wmap = {"1Y": int(round(ppy)), "2Y": int(round(2 * ppy)),
             "3Y": int(round(3 * ppy)), "5Y": int(round(5 * ppy)), "MAX": T}
@@ -353,7 +374,8 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
                  "cost_bps": s["cost_bps"],
-                 "rev_growth_gate": float(s.get("rev_growth_gate", 0.0) or 0.0)},
+                 "growth_mix": float(s.get("growth_mix", 0.0) or 0.0),
+                 "growth_thresh": float(s.get("growth_thresh", 0.15))},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},
         "curves": {"dates": [str(d.date()) for d in dts],
                    "model": curve(mr), "sp500": curve(sr), "nasdaq": curve(nr)},

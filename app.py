@@ -57,7 +57,7 @@ def page_edge_tracker():
 # ---- json api --------------------------------------------------------------
 _EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
-_EDGE_GATES = {0.0, 0.05, 0.10, 0.15}
+_EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 
 
 def _safe(fn):
@@ -71,9 +71,9 @@ def _safe(fn):
 
 
 @lru_cache(maxsize=128)
-def _cached_edge_backtest(window: str, hold: int, gate: float):
+def _cached_edge_backtest(window: str, hold: int, mix: float):
     import edge_lib
-    return edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "rev_growth_gate": gate})
+    return edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix})
 
 
 @app.post("/api/edge_backtest")
@@ -89,12 +89,12 @@ def api_edge_backtest():
     if hold not in _EDGE_HOLDS:
         hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
     try:
-        gate = round(float(body.get("gate", 0.0)), 2)
+        mix = round(float(body.get("mix", 0.75)), 2)
     except (TypeError, ValueError):
-        gate = 0.0
-    if gate not in _EDGE_GATES:
-        gate = 0.0                               # optional YoY rev-growth gate
-    return _safe(lambda: _cached_edge_backtest(window, hold, gate))
+        mix = 0.75
+    if mix not in _EDGE_MIXES:
+        mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
+    return _safe(lambda: _cached_edge_backtest(window, hold, mix))
 
 
 @app.get("/api/edge_tracker")

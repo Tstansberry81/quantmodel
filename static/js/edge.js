@@ -4,7 +4,7 @@ const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
 
 let WINDOW = "MAX";
 let HOLD = 42;
-let GATE = 0;                 // optional YoY rev-growth gate (0 = off)
+let MIX = 0.75;               // growth mix: share of basket from >=15%-rev-growth names
 const CHARTS = {};
 function mkChart(id,cfg){ if(CHARTS[id]) CHARTS[id].destroy(); CHARTS[id]=new Chart(document.getElementById(id),cfg); }
 
@@ -23,7 +23,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:WINDOW, hold:HOLD, gate:GATE})});
+      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
     const d = await r.json();
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     render(d);
@@ -83,7 +83,7 @@ function render(d){
     ['Liquidity floor', '≥ $'+fmtN(s.mcap_floor_bn,0)+'B'],
     ['Correlation cap', fmtN(s.corr_cap,2)],
     ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'],
-    ['Growth gate', (s.rev_growth_gate>0 ? '≥'+fmtN(s.rev_growth_gate*100,0)+'% YoY rev' : 'off (market-data only)')],
+    ['Growth mix', (s.growth_mix>0 ? fmtN(s.growth_mix*100,0)+'% from ≥'+fmtN((s.growth_thresh||0.15)*100,0)+'% growth names' : 'off (pure momentum)')],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:15px">${v}</div></div>`).join('');
 
   document.getElementById('caveat').innerHTML =
@@ -111,10 +111,10 @@ document.addEventListener('DOMContentLoaded',()=>{
       b.classList.add('active'); HOLD=+b.dataset.h; run();
     });
   });
-  document.querySelectorAll('#gatebtns button').forEach(b=>{
+  document.querySelectorAll('#mixbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
-      document.querySelectorAll('#gatebtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); GATE=+b.dataset.g; run();
+      document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); MIX=+b.dataset.m; run();
     });
   });
   run();

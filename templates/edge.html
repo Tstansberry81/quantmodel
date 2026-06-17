@@ -26,14 +26,15 @@
   <span class="small">rebalance cadence (months)</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
-  <label class="small">Growth gate:</label>
-  <div class="btnrow" id="gatebtns">
-    <button data-g="0" class="active">Off</button>
-    <button data-g="0.05">≥5%</button>
-    <button data-g="0.10">≥10%</button>
-    <button data-g="0.15">≥15%</button>
+  <label class="small">Growth mix:</label>
+  <div class="btnrow" id="mixbtns">
+    <button data-m="0">Off</button>
+    <button data-m="0.25">25%</button>
+    <button data-m="0.5">50%</button>
+    <button data-m="0.75" class="active">75%</button>
+    <button data-m="1">100%</button>
   </div>
-  <span class="small">optional YoY revenue-growth filter (adds fundamentals)</span>
+  <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
 </div>
 
 <div id="status" class="loading">Running the Edge backtest… (first run builds the panel, ~1–2 min)</div>
