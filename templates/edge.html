@@ -36,6 +36,11 @@
   </div>
   <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
 </div>
+<div class="controls" style="margin-bottom:18px">
+  <label class="small">Amount invested:</label>
+  <span class="small" style="color:var(--text)">$</span><input id="amount" type="number" value="10000" min="0" step="1000" style="width:120px">
+  <span class="small">the dollar value of this stake over the selected backtest window</span>
+</div>
 
 <div id="status" class="loading">Running the Edge backtest… (first run builds the panel, ~1–2 min)</div>
 
@@ -43,13 +48,14 @@
   <div class="cards" id="headline"></div>
 
   <div class="panel">
-    <h2>Growth of $1 — Edge vs S&amp;P 500 vs Nasdaq <span class="small">(total return, net of costs)</span></h2>
+    <h2>Growth of $<span id="investLabel">1</span> — Edge vs S&amp;P 500 vs Nasdaq <span class="small">(total return, net of costs)</span></h2>
     <div class="chartwrap"><canvas id="edgeCurve"></canvas></div>
     <div class="legend">
       <span><i class="dot" style="background:#d4af37"></i>The Edge</span>
       <span><i class="dot" style="background:#e6edf3"></i>S&amp;P 500 (TR)</span>
       <span><i class="dot" style="background:#22c55e"></i>Nasdaq-100 (TR)</span>
     </div>
+    <div id="endvals" class="small" style="margin-top:10px"></div>
   </div>
 
   <div class="grid grid-2">
@@ -63,7 +69,7 @@
     <div class="panel">
       <h2>Performance Metrics <span class="small">(selected window)</span></h2>
       <table id="perf">
-        <thead><tr><th>Strategy</th><th>Total Return</th><th>CAGR</th><th>Sharpe</th><th>Max DD</th></tr></thead>
+        <thead><tr><th>Strategy</th><th>Total Return</th><th>CAGR</th><th>Sharpe</th><th>Sortino</th><th>Max DD</th></tr></thead>
         <tbody></tbody>
       </table>
       <div id="turnover" class="cards" style="margin-top:14px"></div>

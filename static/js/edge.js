@@ -1,11 +1,14 @@
 const fmtPct = v => v==null||isNaN(v) ? "—" : (v*100).toFixed(1)+"%";
 const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
 const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
+const fmtUSD = n => n==null||isNaN(n) ? "—" : "$"+Math.round(n).toLocaleString('en-US');
 
 const _O = loadEdgeOpts();    // shared with the Edge Tracker (localStorage)
 let WINDOW = _O.window;
 let HOLD = _O.hold;
 let MIX = _O.mix;             // growth mix: share of basket from >=15%-rev-growth names
+let AMOUNT = 10000;           // starting capital for the dollar-value view (client-side only)
+let LAST = null;              // last backtest response, so the amount can re-render without refetch
 const CHARTS = {};
 function mkChart(id,cfg){ if(CHARTS[id]) CHARTS[id].destroy(); CHARTS[id]=new Chart(document.getElementById(id),cfg); }
 
@@ -27,7 +30,7 @@ async function run(){
       body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
-    render(d);
+    LAST=d; render(d);
     status.style.display='none';
     document.getElementById('app').style.display='block';
     const note=document.getElementById('windownote');
@@ -41,6 +44,7 @@ function render(d){
   document.getElementById('headline').innerHTML = [
     ['CAGR (net)', fmtPct(m.cagr), cls(m.cagr), 'Compound annual growth rate, after ~10bps trading costs'],
     ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong)'],
+    ['Sortino', fmtN(m.sortino,2), '', 'Return per unit of downside risk — like Sharpe but only losses count as risk'],
     ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss over the window'],
     ['Total return', fmtPct(m.total_return), cls(m.total_return), 'Cumulative growth over the window'],
     ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha), 'Annualized return above the S&P 500'],
@@ -48,11 +52,19 @@ function render(d){
   ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
   const c=d.curves;
+  const amt = AMOUNT>0 ? AMOUNT : 1;                 // dollar multiplier (curves are growth-of-$1)
+  const scl = a => (a||[]).map(x=>+(x*amt).toFixed(2));
   mkChart('edgeCurve',{type:'line',data:{labels:c.dates,datasets:[
-    {label:'The Edge',data:c.model,borderColor:'#d4af37',borderWidth:2,pointRadius:0,tension:.1},
-    {label:'S&P 500 (TR)',data:c.sp500,borderColor:'#e6edf3',borderWidth:2,pointRadius:0,tension:.1},
-    {label:'Nasdaq-100 (TR)',data:c.nasdaq,borderColor:'#22c55e',borderWidth:2,pointRadius:0,tension:.1},
-  ]},options:opts('Growth of $1 (log)')});
+    {label:'The Edge',data:scl(c.model),borderColor:'#d4af37',borderWidth:2,pointRadius:0,tension:.1},
+    {label:'S&P 500 (TR)',data:scl(c.sp500),borderColor:'#e6edf3',borderWidth:2,pointRadius:0,tension:.1},
+    {label:'Nasdaq-100 (TR)',data:scl(c.nasdaq),borderColor:'#22c55e',borderWidth:2,pointRadius:0,tension:.1},
+  ]},options:opts('Value of $'+amt.toLocaleString('en-US')+' (log)')});
+  const il=document.getElementById('investLabel'); if(il) il.textContent=amt.toLocaleString('en-US');
+  const endv = k => (c[k]&&c[k].length) ? c[k][c[k].length-1]*amt : null;
+  const ev=document.getElementById('endvals');
+  if(ev) ev.innerHTML = `<b>$${amt.toLocaleString('en-US')}</b> over ${(d.period||[]).join(' → ')} becomes `
+    +`<b style="color:#d4af37">${fmtUSD(endv('model'))}</b> in the Edge `
+    +`· <b>${fmtUSD(endv('sp500'))}</b> S&amp;P · <b>${fmtUSD(endv('nasdaq'))}</b> Nasdaq`;
 
   document.querySelector('#winperf tbody').innerHTML = (d.windows||[]).map(w=>
     `<tr><td>${w.w}</td><td class="${cls(w.cagr)}">${fmtPct(w.cagr)}</td><td>${fmtN(w.sharpe,2)}</td>
@@ -61,7 +73,7 @@ function render(d){
   const rows=[['The Edge','model'],['S&P 500 (TR)','sp500'],['Nasdaq-100 (TR)','nasdaq']].map(([nm,k])=>{
     const x=p[k]||{};
     return `<tr><td>${nm}</td><td class="${cls(x.total_return)}">${fmtPct(x.total_return)}</td>
-      <td class="${cls(x.cagr)}">${fmtPct(x.cagr)}</td><td>${fmtN(x.sharpe,2)}</td>
+      <td class="${cls(x.cagr)}">${fmtPct(x.cagr)}</td><td>${fmtN(x.sharpe,2)}</td><td>${fmtN(x.sortino,2)}</td>
       <td class="neg">${fmtPct(x.max_drawdown)}</td></tr>`;}).join('');
   document.querySelector('#perf tbody').innerHTML=rows;
 
@@ -119,5 +131,13 @@ document.addEventListener('DOMContentLoaded',()=>{
       b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
     });
   });
+  const amt=document.getElementById('amount');
+  if(amt){
+    AMOUNT = Math.max(0, parseFloat(amt.value)||0);   // honor the HTML default
+    amt.addEventListener('input',()=>{
+      AMOUNT = Math.max(0, parseFloat(String(amt.value).replace(/[^0-9.]/g,''))||0);
+      if(LAST) render(LAST);                           // pure client re-scale, no refetch
+    });
+  }
   run();
 });

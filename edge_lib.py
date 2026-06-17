@@ -252,6 +252,17 @@ def perf(rets, ppy=PPY):
     return float(cagr), dd, sh
 
 
+def sortino(rets, ppy=PPY):
+    """Annualized return per unit of DOWNSIDE deviation (MAR=0) — like Sharpe but
+    only losses count as risk. Same no-excess-of-cash convention as perf()/the page."""
+    r = np.nan_to_num(np.asarray(rets, float))
+    if len(r) == 0:
+        return 0.0
+    downside = np.minimum(r, 0.0)
+    dd = float(np.sqrt(np.mean(downside ** 2)))
+    return float(np.sqrt(ppy) * np.mean(r) / dd) if dd > 0 else 0.0
+
+
 def eval_windows(pan: EdgePanel, rets, label=""):
     """Print CAGR / Sharpe / maxDD over trailing 1Y / 2Y / 5Y / full, vs S&P,
     using the panel's true rebalances-per-year for annualization."""
@@ -359,7 +370,8 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     def stats(r):
         c, dd, sh = perf(r, ppy)
         tot = float(np.cumprod(1 + np.nan_to_num(r))[-1] - 1)
-        return {"cagr": c, "sharpe": sh, "max_drawdown": dd, "total_return": tot}
+        return {"cagr": c, "sharpe": sh, "sortino": sortino(r, ppy),
+                "max_drawdown": dd, "total_return": tot}
 
     windows = []
     for wn in ("1Y", "2Y", "5Y", "MAX"):
