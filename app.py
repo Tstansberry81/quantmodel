@@ -91,6 +91,7 @@ def page_edge_tracker():
 _EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
+_EDGE_NS = {10, 20}                          # basket-size toggle (concentrated vs default)
 
 
 def _safe(fn):
@@ -104,9 +105,9 @@ def _safe(fn):
 
 
 @lru_cache(maxsize=128)
-def _cached_edge_backtest(window: str, hold: int, mix: float):
+def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     import edge_lib
-    return edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix})
+    return edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix, "n": n})
 
 
 @app.post("/api/edge_backtest")
@@ -127,13 +128,45 @@ def api_edge_backtest():
         mix = 0.75
     if mix not in _EDGE_MIXES:
         mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
-    return _safe(lambda: _cached_edge_backtest(window, hold, mix))
+    try:
+        n = int(body.get("n", 20))
+    except (TypeError, ValueError):
+        n = 20
+    if n not in _EDGE_NS:
+        n = 20                                   # basket size: 10 (concentrated) or 20 (default)
+    return _safe(lambda: _cached_edge_backtest(window, hold, mix, n))
+
+
+@lru_cache(maxsize=128)
+def _cached_tracker(hold: int, window: str, n: int, mix: float):
+    import edge_tracker_lib
+    return edge_tracker_lib.tracker_state(hold=hold, window=window, n=n, mix=mix)
 
 
 @app.get("/api/edge_tracker")
 def api_edge_tracker():
-    import edge_tracker_lib
-    return _safe(lambda: edge_tracker_lib.tracker_state())
+    try:
+        hold = int(request.args.get("hold", 42))
+    except (TypeError, ValueError):
+        hold = 42
+    if hold not in _EDGE_HOLDS:
+        hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
+    window = (request.args.get("window", "MAX") or "MAX").upper()
+    if window not in _EDGE_WINDOWS:
+        window = "MAX"
+    try:
+        n = int(request.args.get("n", 20))
+    except (TypeError, ValueError):
+        n = 20
+    if n not in _EDGE_NS:
+        n = 20                                   # basket size: 10 (concentrated) or 20 (default)
+    try:
+        mix = round(float(request.args.get("mix", 0.75)), 2)
+    except (TypeError, ValueError):
+        mix = 0.75
+    if mix not in _EDGE_MIXES:
+        mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
+    return _safe(lambda: _cached_tracker(hold, window, n, mix))
 
 
 @app.get("/api/meta")

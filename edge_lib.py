@@ -329,7 +329,9 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
         gross = np.where(pan.ma200_on, gross, regime_expo * gross + (1 - regime_expo) * pan.rf_per)
     turn = np.array(turn)
     net = gross - (cost_bps / 1e4) * turn
-    return pan.bdates, gross, net, turn, pan.spxf, pan.ndxf
+    # holds (per-rebalance company_key baskets) is returned too so callers like the
+    # Edge Tracker can show what was actually held each rebalance, with no recompute.
+    return pan.bdates, gross, net, turn, pan.spxf, pan.ndxf, holds
 
 
 def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
@@ -338,7 +340,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     s = {**EDGE_SPEC, **(spec or {})}
     pan = load_edge_panel(hold=s["hold"])
     ppy = pan.ppy                                      # true rebalances/year for this hold
-    bdates, gross, net, turn, spxf, ndxf = _edge_full(
+    bdates, gross, net, turn, spxf, ndxf, _holds = _edge_full(
         s["hold"], s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
         s["regime_expo"], s["cost_bps"], tuple(sorted(s["signal"].items())),
         float(s.get("growth_mix", 0.0) or 0.0), float(s.get("growth_thresh", 0.15)))

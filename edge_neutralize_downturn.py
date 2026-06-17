@@ -38,9 +38,9 @@ def skew(r):
 # ---------------------------------------------------------------------------
 # Pull the full-history Edge series. regime_expo=0.25 = full spec (regime ON);
 # regime_expo=1.0 = regime de-risk OFF (fully invested below the 200dMA).
-bdates, gross_on, net_on, turn, spxf, ndxf = E._edge_full(
+bdates, gross_on, net_on, turn, spxf, ndxf, _holds = E._edge_full(
     42, 20, 2e9, 0.50, 126, 0.25, 10.0, SIG)
-_, gross_off, net_off, _, _, _ = E._edge_full(
+_, gross_off, net_off, _, _, _, _ = E._edge_full(
     42, 20, 2e9, 0.50, 126, 1.0, 10.0, SIG)
 
 pan = E.load_edge_panel(hold=42)

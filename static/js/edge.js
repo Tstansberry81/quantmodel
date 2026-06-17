@@ -5,6 +5,7 @@ const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
 let WINDOW = "MAX";
 let HOLD = 42;
 let MIX = 0.75;               // growth mix: share of basket from >=15%-rev-growth names
+let NSIZE = 20;               // basket size toggle: 10 (concentrated) or 20 (default)
 const CHARTS = {};
 function mkChart(id,cfg){ if(CHARTS[id]) CHARTS[id].destroy(); CHARTS[id]=new Chart(document.getElementById(id),cfg); }
 
@@ -23,7 +24,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
+      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX, n:NSIZE})});
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     render(d);
@@ -115,6 +116,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
       b.classList.add('active'); MIX=+b.dataset.m; run();
+    });
+  });
+  document.querySelectorAll('#nbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); NSIZE=+b.dataset.n; run();
     });
   });
   run();

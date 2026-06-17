@@ -3,13 +3,18 @@ const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
 const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
 const sgnPct = v => v==null||isNaN(v) ? "—" : (v>=0?"+":"")+(v*100).toFixed(1)+"%";
 
+let WINDOW = "MAX";          // paper-log horizon: 1Y/2Y/5Y/MAX
+let HOLD = 42;               // rebalance clock: 21/42/63/126 = 1M/2M/3M/6M
+let NSIZE = 20;              // basket size: 10 (concentrated) or 20 (default)
+let MIX = 0.75;              // growth mix: share of basket from >=15%-rev-growth names
+
 async function run(){
   const status=document.getElementById('status');
   status.className='loading'; status.style.display='block';
   status.textContent='Loading the Edge tracker…';
   document.getElementById('app').style.display='none';
   try{
-    const r = await fetch('/api/edge_tracker');
+    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&n=${NSIZE}&mix=${MIX}`);
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Tracker failed'; return; }
     render(d);
@@ -34,24 +39,71 @@ function render(d){
   document.querySelector('#book tbody').innerHTML = (d.current_book||[]).map(b=>
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
      <td>${fmtPct(b.weight)}</td><td class="${cls(b.accel)}">${fmtN(b.accel,2)}</td></tr>`).join('');
+  const mixTxt = spec.growth_mix>0 ? `${Math.round(spec.growth_mix*100)}% growth mix` : 'pure momentum';
   document.getElementById('bookmeta').textContent =
     `Full-spec Edge picks as of ${d.book_date} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
-    +`ranked by acceleration signal · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, corr cap ${fmtN(spec.corr_cap,2)}.`;
+    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, corr cap ${fmtN(spec.corr_cap,2)}.`;
 
   // ---- paper-trading log (newest first) ----
   const log=(d.log||[]).slice().reverse();
-  document.querySelector('#log tbody').innerHTML = log.map(t=>{
+  document.querySelector('#log tbody').innerHTML = log.map((t,i)=>{
     const open = t.status==='OPEN';
     const badge = open ? '<span class="pos">● OPEN</span>' : '<span style="color:#8b949e">closed</span>';
+    const h=t.holdings||[];
+    const toggle = h.length
+      ? `<button class="port-toggle" type="button" data-i="${i}" aria-expanded="false">▸ ${h.length} names</button>`
+      : '—';
+    const chips = h.map(x=>
+      `<span class="port-chip" title="${(x.name||'').replace(/"/g,'&quot;')}"><b>${x.ticker}</b> <span class="${cls(x.ret)}">${sgnPct(x.ret)}</span></span>`).join('');
     return `<tr><td>${t.opened}</td><td>${t.closes}</td><td>${badge}</td>
       <td class="${cls(t.edge_ret)}">${sgnPct(t.edge_ret)}</td>
       <td class="${cls(t.sp_ret)}">${sgnPct(t.sp_ret)}</td>
-      <td class="${cls(t.excess)}">${sgnPct(t.excess)}</td></tr>`;}).join('');
+      <td class="${cls(t.excess)}">${sgnPct(t.excess)}</td>
+      <td style="text-align:center">${toggle}</td></tr>
+      <tr class="port-row" id="port-${i}" hidden><td colspan="7">
+        <div class="port-meta">Basket held from ${t.opened} (equal-weight) — each name's own ~${Math.round((spec.hold_days||42)/21)}-month return:</div>
+        <div class="port-grid">${chips}</div></td></tr>`;}).join('');
+  document.querySelectorAll('#log .port-toggle').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const row=document.getElementById('port-'+btn.dataset.i);
+      const showing=row.hidden===false;
+      row.hidden=showing;
+      btn.setAttribute('aria-expanded', String(!showing));
+      btn.textContent=(showing?'▸ ':'▾ ')+btn.textContent.replace(/^[▸▾]\s*/,'');
+    });
+  });
+  const wlabel = WINDOW==='MAX' ? 'full history' : `last ${WINDOW}`;
   document.getElementById('logmeta').textContent =
-    `Last ${log.length} rebalances · ${s.n_closed} closed paper trades total · `
+    `${wlabel} · showing ${log.length} of ${s.n_total} rebalances (${Math.round((spec.hold_days||42)/21)}M clock) · ${s.n_closed} closed paper trades · `
     +`beat the S&P ${fmtPct(s.hit_rate)} of the time · avg excess ${sgnPct(s.avg_excess)}/trade `
     +`(avg Edge ${sgnPct(s.avg_edge_ret)} vs S&P ${sgnPct(s.avg_sp_ret)}). `
     +`Returns are NET of ${spec.cost_bps}bps costs. History seeded from the backtest; live snapshots accrue forward from ${s.first_snapshot}.`;
 }
 
-document.addEventListener('DOMContentLoaded', run);
+document.addEventListener('DOMContentLoaded',()=>{
+  document.querySelectorAll('#windowbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#windowbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); WINDOW=b.dataset.w; run();
+    });
+  });
+  document.querySelectorAll('#holdbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#holdbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); HOLD=+b.dataset.h; run();
+    });
+  });
+  document.querySelectorAll('#nbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); NSIZE=+b.dataset.n; run();
+    });
+  });
+  document.querySelectorAll('#mixbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); MIX=+b.dataset.m; run();
+    });
+  });
+  run();
+});

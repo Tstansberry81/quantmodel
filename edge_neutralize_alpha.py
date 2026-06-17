@@ -116,7 +116,7 @@ def main():
     pan = E.load_edge_panel(hold=HOLD)
 
     # --- Edge full-spec NET per-period returns, aligned to bdates ---
-    bdates, gross, net, turn, spxf, ndxf = E._edge_full(
+    bdates, gross, net, turn, spxf, ndxf, _holds = E._edge_full(
         HOLD, N, MCAP_FLOOR, CORR_CAP, CORR_LB, REGIME_EXPO, COST_BPS,
         tuple(sorted(SIGNAL.items())))
     print(f"\n  panel: {pan.T} rebalances  {bdates[0].date()} -> {bdates[-1].date()}  "

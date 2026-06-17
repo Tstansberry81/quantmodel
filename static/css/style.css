@@ -143,6 +143,17 @@ input.num:focus{outline:none;box-shadow:0 0 0 2px rgba(59,130,246,.35)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
 
+/* ---- paper-log portfolio dropdown ---- */
+.port-toggle{background:transparent;border:1px solid var(--border);color:var(--muted);
+  padding:4px 9px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.port-toggle:hover{background:var(--panel-2);color:var(--text)}
+.port-row>td{background:var(--bg);padding:12px 14px}
+.port-row .port-meta{color:var(--muted);font-size:12px;margin-bottom:8px;white-space:normal;text-align:left}
+.port-grid{display:flex;flex-wrap:wrap;gap:6px}
+.port-chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel-2);
+  border:1px solid var(--border);border-radius:6px;padding:4px 9px;font-size:12px}
+.port-chip b{color:var(--text);font-weight:700}
+
 /* ---- chat assistant ---- */
 #chat-bubble{position:fixed;bottom:20px;right:20px;z-index:9998;width:56px;height:56px;border-radius:50%;
   border:1px solid #2b3340;background:#3b82f6;color:#fff;font-size:24px;cursor:pointer;

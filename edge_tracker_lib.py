@@ -28,8 +28,9 @@ CORR_LOOKBACK = 126
 REGIME_EXPO = 0.25
 COST_BPS = 10.0
 SIGNAL = {"accel": 1.0}
+GROWTH_MIX = 0.75                   # default mirrors the product (EDGE_SPEC growth_mix)
+GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
 
-LOG_TAIL = 18                       # how many paper trades to show
 SNAPSHOT_PATH = os.path.join("data", "cache", "edge_tracker.json")
 
 
@@ -39,16 +40,17 @@ def _meta(data, ck):
             m.get("sector", "Unknown"))
 
 
-def _current_book(pan, data):
+def _current_book(pan, data, n, mix):
     """The latest rebalance's full-spec picks = the live portfolio.
 
-    Equal-weight (1/N) book; we also surface the raw acceleration signal so the
-    reader can see the conviction ordering."""
+    Equal-weight (1/n) book honoring the growth mix (K=round(mix*n) names from the
+    >=GROWTH_THRESH revenue-growth pool, rest pure acceleration); we also surface
+    the raw acceleration signal so the reader can see the conviction ordering."""
     i = pan.T - 1
     df = pan.panels[i]
     floored = df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df
-    cks = E.corr_cap_select(floored, asof=pan.bdates[i], n=N,
-                            weights=SIGNAL, cap=CORR_CAP, lookback=CORR_LOOKBACK)
+    cks = E._blend_select(floored, pan.bdates[i], n, SIGNAL, CORR_CAP,
+                          CORR_LOOKBACK, mix, GROWTH_THRESH)
     w = 1.0 / len(cks) if cks else 0.0
     accel = df.set_index("company_key")["accel"]
     book = []
@@ -64,22 +66,35 @@ def _current_book(pan, data):
     return book, str(pan.bdates[i].date())
 
 
-def _paper_log(pan):
-    """Seed the log from backtest history: every 42-day rebalance is a closed
-    paper trade with its realized NET Edge return vs the S&P. The most recent
-    rebalance is the still-OPEN trade."""
-    bdates, gross, net, turn, spxf, ndxf = E._edge_full(
-        HOLD, N, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
-        tuple(sorted(SIGNAL.items())))
+def _paper_log(pan, data, hold, n, mix):
+    """Seed the FULL log from backtest history: every rebalance is a closed paper
+    trade with its realized NET Edge return vs the S&P (the most recent rebalance
+    is the still-OPEN trade). Each entry also carries the actual basket held that
+    rebalance (ticker + each name's own forward return). Returns the full list,
+    newest last; the caller slices it to the requested window."""
+    bdates, gross, net, turn, spxf, ndxf, holds = E._edge_full(
+        hold, n, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
+        tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH)
     T = len(net)
     log = []
     for i in range(T):
         opened = bdates[i]
-        # close date ~ HOLD trading days later (approx via 7/5 calendar scaling)
-        closes = opened + np.timedelta64(int(round(HOLD * 7 / 5)), "D")
+        # close date ~ hold trading days later (approx via 7/5 calendar scaling)
+        closes = opened + np.timedelta64(int(round(hold * 7 / 5)), "D")
         edge_ret = float(net[i])
         sp_ret = float(spxf[i]) if spxf[i] == spxf[i] else 0.0
         status = "OPEN" if i == T - 1 else "CLOSED"
+        # the basket held this rebalance + each name's own forward return
+        fwd = pan.panels[i].set_index("company_key")["fwd_ret"]
+        holdings = []
+        for ck in holds[i]:
+            tk, nm, _sec = _meta(data, ck)
+            r = float(fwd.get(ck, float("nan")))
+            holdings.append({"ticker": tk, "name": nm,
+                             "ret": (r if r == r else None)})   # NaN -> None
+        # best performer first; names with no return sort last
+        holdings.sort(key=lambda h: (h["ret"] if h["ret"] is not None else -1e9),
+                      reverse=True)
         log.append({
             "opened": str(opened.date()),
             "closes": str(np.datetime64(closes, "D")),
@@ -87,39 +102,50 @@ def _paper_log(pan):
             "edge_ret": edge_ret,
             "sp_ret": sp_ret,
             "excess": edge_ret - sp_ret,
+            "holdings": holdings,
         })
-    # stats over CLOSED trades only
+    return log
+
+
+def _log_stats(log):
+    """Hit-rate / average-excess stats over the CLOSED trades in a (windowed) log."""
     closed = [r for r in log if r["status"] == "CLOSED"]
-    n_closed = len(closed)
+    n = len(closed)
     wins = sum(1 for r in closed if r["excess"] > 0)
-    hit_rate = wins / n_closed if n_closed else 0.0
-    avg_excess = (sum(r["excess"] for r in closed) / n_closed) if n_closed else 0.0
-    avg_edge = (sum(r["edge_ret"] for r in closed) / n_closed) if n_closed else 0.0
-    avg_sp = (sum(r["sp_ret"] for r in closed) / n_closed) if n_closed else 0.0
-    stats = {
-        "n_closed": n_closed,
-        "hit_rate": hit_rate,
-        "avg_excess": avg_excess,
-        "avg_edge_ret": avg_edge,
-        "avg_sp_ret": avg_sp,
+    return {
+        "n_closed": n,
+        "hit_rate": wins / n if n else 0.0,
+        "avg_excess": (sum(r["excess"] for r in closed) / n) if n else 0.0,
+        "avg_edge_ret": (sum(r["edge_ret"] for r in closed) / n) if n else 0.0,
+        "avg_sp_ret": (sum(r["sp_ret"] for r in closed) / n) if n else 0.0,
     }
-    return log[-LOG_TAIL:], stats
+
+
+# window label -> rebalances, derived from rebalances-per-year (ppy = 252/hold),
+# matching the backtest's window math so the two pages agree.
+def _window_k(n_rebals, ppy, window):
+    wmap = {"1Y": round(ppy), "2Y": round(2 * ppy), "3Y": round(3 * ppy),
+            "5Y": round(5 * ppy), "MAX": n_rebals}
+    return max(2, min(int(wmap.get(window, n_rebals)), n_rebals))
+
+
+def _read_snapshots():
+    """Load the forward-accruing snapshot list (newest last); [] if absent/bad."""
+    try:
+        if os.path.exists(SNAPSHOT_PATH):
+            with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+                snaps = json.load(f)
+            return snaps if isinstance(snaps, list) else []
+    except (OSError, ValueError):
+        pass
+    return []
 
 
 def _persist_snapshot(book_date, current_book):
     """Append the current book + date to the snapshot file the first time we see
     this rebalance date, so the tracker genuinely accrues forward over real
     calendar time. Returns the snapshot list (newest last)."""
-    snaps = []
-    try:
-        if os.path.exists(SNAPSHOT_PATH):
-            with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
-                snaps = json.load(f)
-            if not isinstance(snaps, list):
-                snaps = []
-    except (OSError, ValueError):
-        snaps = []
-
+    snaps = _read_snapshots()
     already = any(s.get("book_date") == book_date for s in snaps)
     if not already:
         snaps.append({
@@ -136,14 +162,39 @@ def _persist_snapshot(book_date, current_book):
     return snaps
 
 
-def tracker_state() -> dict:
-    """Assemble the full tracker payload consumed by /api/edge_tracker."""
+def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
+                  mix: float = GROWTH_MIX) -> dict:
+    """Assemble the tracker payload consumed by /api/edge_tracker.
+
+    `hold` (21/42/63/126 = 1M/2M/3M/6M) sets the rebalance clock; `window`
+    (1Y/2Y/5Y/MAX) trims the paper-log to that horizon; `n` (10/20) sets the
+    basket size; `mix` (0/.25/.5/.75/1) sets the growth mix. All four mirror the
+    backtest page so the tracker can be explored over the same clocks, windows,
+    basket sizes, and growth mixes. The log + its hit-rate/excess stats reflect
+    the chosen window; the current book and the forward-accruing snapshot record
+    are always the live values."""
     try:
-        pan = E.load_edge_panel(hold=HOLD)
+        hold = int(hold) if int(hold) in (21, 42, 63, 126) else HOLD
+        window = window if window in ("1Y", "2Y", "3Y", "5Y", "MAX") else "MAX"
+        n = int(n) if int(n) in (10, 20) else N
+        mix = round(float(mix), 2)
+        if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
+            mix = GROWTH_MIX
+        pan = E.load_edge_panel(hold=hold)
         data = engine._load_bt_data()
-        current_book, book_date = _current_book(pan, data)
-        log, log_stats = _paper_log(pan)
-        snaps = _persist_snapshot(book_date, current_book)
+        current_book, book_date = _current_book(pan, data, n, mix)
+        full_log = _paper_log(pan, data, hold, n, mix)
+
+        # trim to the requested window (same math as the backtest: ppy = 252/hold)
+        k = _window_k(len(full_log), pan.ppy, window)
+        log = full_log[-k:]
+        log_stats = _log_stats(log)
+
+        # The forward record only accrues at the real product config (2M clock,
+        # 20-name book, default growth mix); other clocks/sizes/mixes are
+        # exploratory and must not write phantom snapshots into the live record.
+        snaps = (_persist_snapshot(book_date, current_book)
+                 if hold == HOLD and n == N and mix == GROWTH_MIX else _read_snapshots())
 
         stats = {
             "n_snapshots": len(snaps),
@@ -153,17 +204,21 @@ def tracker_state() -> dict:
             "avg_edge_ret": log_stats["avg_edge_ret"],
             "avg_sp_ret": log_stats["avg_sp_ret"],
             "first_snapshot": snaps[0]["book_date"] if snaps else book_date,
+            "window": window,
+            "n_total": len(full_log),
         }
         return {
             "ok": True,
             "book_date": book_date,
+            "window": window,
             "current_book": current_book,
             "log": log,
             "stats": stats,
             "spec": {
-                "hold_days": HOLD, "n": N, "mcap_floor_bn": MCAP_FLOOR / 1e9,
+                "hold_days": hold, "n": n, "mcap_floor_bn": MCAP_FLOOR / 1e9,
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
                 "cost_bps": COST_BPS, "signal": "acceleration (3m-prior3m)",
+                "growth_mix": mix, "growth_thresh": GROWTH_THRESH,
             },
         }
     except Exception as e:  # surface a clean error to the page

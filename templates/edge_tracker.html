@@ -21,12 +21,52 @@
     <li><b>Liquidity floor</b> &mdash; keep only names &ge; $2B market cap (tradeable size).</li>
     <li><b>Rank</b> by the acceleration signal, highest first.</li>
     <li><b>Correlation cap</b> &mdash; admit a name only if it's &le; 0.50 correlated with every holding already in the basket (so it never becomes eight versions of one bet).</li>
-    <li><b>Hold</b> the top 20, equal-weight.</li>
+    <li><b>Hold</b> the top names (10 or 20, selectable), equal-weight.</li>
     <li><b>Regime switch</b> &mdash; if the S&amp;P 500 is below its 200-day average, cut to 25% invested (rest in cash) to dodge crashes.</li>
     <li><b>Costs</b> &mdash; returns are shown net of ~10bps trading costs.</li>
-    <li><i>Optional growth gate</i> &mdash; on the backtest page you can also require a minimum YoY revenue growth.</li>
+    <li><b>Growth mix</b> &mdash; optionally draw part of the basket (default 75%) from names with &ge;15% YoY revenue growth; the selector above adjusts it (Off&ndash;100%).</li>
   </ol>
   <p class="small" style="color:#8b949e;margin-top:10px">Honest caveats: history is survivorship-inflated (missing delisted names), short-window returns are lumpy and tail-driven, and the recent era has been unusually momentum-friendly &mdash; trust the risk-adjusted shape (Sharpe, drawdown) over the headline CAGR.</p>
+</div>
+
+<div class="controls" style="margin-bottom:10px">
+  <label class="small">Window:</label>
+  <div class="btnrow" id="windowbtns">
+    <button data-w="1Y">1Y</button>
+    <button data-w="2Y">2Y</button>
+    <button data-w="5Y">5Y</button>
+    <button data-w="MAX" class="active">Max</button>
+  </div>
+  <span class="small">how far back the paper-trading log reaches</span>
+</div>
+<div class="controls" style="margin-bottom:10px">
+  <label class="small">Rebalance clock:</label>
+  <div class="btnrow" id="holdbtns">
+    <button data-h="21">1M</button>
+    <button data-h="42" class="active">2M</button>
+    <button data-h="63">3M</button>
+    <button data-h="126">6M</button>
+  </div>
+  <span class="small">rebalance cadence (months) — drives the whole book + log</span>
+</div>
+<div class="controls" style="margin-bottom:10px">
+  <label class="small">Basket size:</label>
+  <div class="btnrow" id="nbtns">
+    <button data-n="10">10 (concentrated)</button>
+    <button data-n="20" class="active">20 (default)</button>
+  </div>
+  <span class="small">number of names held — 10 is more concentrated, 20 is steadier</span>
+</div>
+<div class="controls" style="margin-bottom:18px">
+  <label class="small">Growth mix:</label>
+  <div class="btnrow" id="mixbtns">
+    <button data-m="0">Off</button>
+    <button data-m="0.25">25%</button>
+    <button data-m="0.5">50%</button>
+    <button data-m="0.75" class="active">75%</button>
+    <button data-m="1">100%</button>
+  </div>
+  <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
 </div>
 
 <div id="status" class="loading">Loading the Edge tracker…</div>
@@ -46,7 +86,7 @@
   <div class="panel">
     <h2>Paper-trading log <span class="small">— snapshots tracked forward vs S&amp;P</span></h2>
     <table id="log">
-      <thead><tr><th>Opened</th><th>Closes</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th></tr></thead>
+      <thead><tr><th>Opened</th><th>Closes</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Portfolio</th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="small" id="logmeta"></p>
