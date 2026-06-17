@@ -26,9 +26,11 @@ from datetime import datetime, timezone
 import edge_lib
 import edge_tracker_lib
 
-WINDOW = "2Y"      # 2-year backtest window
+WINDOW = "2Y"      # 2-year backtest curve (valid: 1Y/2Y/3Y/5Y/10Y/MAX)
 HOLD = 21          # 1-month rebalance clock
 MIX = 0.75         # 75% YoY-revenue-growth mix
+# Note: the per-window summary stats (incl. 10Y) ride along in the export via
+# bt["windows"], regardless of which WINDOW drives the headline curve above.
 # basket size n=10 is the product book (edge_lib.EDGE_SPEC / edge_tracker_lib.N)
 
 

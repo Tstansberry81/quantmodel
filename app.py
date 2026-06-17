@@ -93,7 +93,7 @@ def page_model():
 
 
 # ---- json api --------------------------------------------------------------
-_EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "MAX"}
+_EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 # Basket size is fixed at the product value (10) in edge_lib.EDGE_SPEC / edge_tracker_lib.N.

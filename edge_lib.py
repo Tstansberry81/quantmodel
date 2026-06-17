@@ -357,7 +357,8 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
         float(s.get("growth_mix", 0.0) or 0.0), float(s.get("growth_thresh", 0.15)))
     T = len(net)
     wmap = {"1Y": int(round(ppy)), "2Y": int(round(2 * ppy)),
-            "3Y": int(round(3 * ppy)), "5Y": int(round(5 * ppy)), "MAX": T}
+            "3Y": int(round(3 * ppy)), "5Y": int(round(5 * ppy)),
+            "10Y": int(round(10 * ppy)), "MAX": T}
     k = min(wmap.get(window, T), T)
     if k < 2:
         return {"ok": False, "reason": "window too short"}
@@ -374,7 +375,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                 "max_drawdown": dd, "total_return": tot}
 
     windows = []
-    for wn in ("1Y", "2Y", "5Y", "MAX"):
+    for wn in ("1Y", "2Y", "5Y", "10Y", "MAX"):
         kk = min(wmap[wn], T)
         cg, dd, sh = perf(net[T - kk:T], ppy); cs, _, ss = perf(spxf[T - kk:T], ppy)
         windows.append({"w": wn, "cagr": cg, "sharpe": sh, "dd": dd,

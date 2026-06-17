@@ -125,7 +125,7 @@ def _log_stats(log):
 # matching the backtest's window math so the two pages agree.
 def _window_k(n_rebals, ppy, window):
     wmap = {"1Y": round(ppy), "2Y": round(2 * ppy), "3Y": round(3 * ppy),
-            "5Y": round(5 * ppy), "MAX": n_rebals}
+            "5Y": round(5 * ppy), "10Y": round(10 * ppy), "MAX": n_rebals}
     return max(2, min(int(wmap.get(window, n_rebals)), n_rebals))
 
 
@@ -175,7 +175,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
     are always the live values."""
     try:
         hold = int(hold) if int(hold) in (21, 42, 63, 126) else HOLD
-        window = window if window in ("1Y", "2Y", "3Y", "5Y", "MAX") else "MAX"
+        window = window if window in ("1Y", "2Y", "3Y", "5Y", "10Y", "MAX") else "MAX"
         n = int(n) if int(n) in (10, 20) else N
         mix = round(float(mix), 2)
         if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
