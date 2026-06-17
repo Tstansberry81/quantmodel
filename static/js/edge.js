@@ -24,7 +24,7 @@ async function run(){
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
-    const d = await r.json();
+    const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     render(d);
     status.style.display='none';

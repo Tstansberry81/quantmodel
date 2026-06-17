@@ -10,7 +10,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_tracker');
-    const d = await r.json();
+    const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Tracker failed'; return; }
     render(d);
     status.style.display='none';

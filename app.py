@@ -14,6 +14,7 @@ from collections import defaultdict
 from functools import lru_cache
 
 from flask import Flask, render_template, request, jsonify, redirect
+from werkzeug.exceptions import HTTPException
 
 from qmodel import engine   # cached-data loaders + meta used by the Edge + footer
 
@@ -35,6 +36,38 @@ _load_dotenv()
 
 app = Flask(__name__)
 app.json.sort_keys = False
+
+
+# ---- error handlers --------------------------------------------------------
+# Guarantee that anything under /api/ always answers with JSON — never an HTML
+# error page — for EVERY status code, not just 404/405/500. Without this, an
+# error returns Flask's HTML page and the frontend's `await r.json()` blows up
+# with the cryptic "Unexpected token '<', "<!DOCTYPE"... is not valid JSON".
+
+def _wants_json() -> bool:
+    return request.path.startswith("/api/")
+
+
+@app.errorhandler(HTTPException)
+def _err_http(e):
+    """Any HTTP error (404, 405, 400, 413, 503, …) → JSON on /api/ paths;
+    otherwise Flask's normal HTML error page. One handler covers all codes so
+    the always-JSON invariant can't be missed for an un-enumerated status."""
+    if _wants_json():
+        return jsonify({"ok": False, "reason": e.description or e.name}), (e.code or 500)
+    return e
+
+
+@app.errorhandler(Exception)
+def _err_any(e):
+    """Unexpected non-HTTP exception: JSON 500 on /api/ paths, otherwise re-raise
+    so Flask's normal 500 page (and the dev debugger) handles it."""
+    if isinstance(e, HTTPException):     # safety net; normally routed to _err_http
+        return _err_http(e)
+    app.logger.exception("Unhandled error")
+    if _wants_json():
+        return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"}), 500
+    raise e
 
 
 # ---- pages -----------------------------------------------------------------

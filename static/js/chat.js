@@ -70,7 +70,7 @@
           history: history.slice(0, -1),
         }),
       });
-      const d = await r.json();
+      const d = await safeJson(r);
       thinking.remove();
       const reply = d.ok ? d.reply : ('⚠ ' + (d.reason || 'Something went wrong.'));
       addMsg(reply, 'bot');

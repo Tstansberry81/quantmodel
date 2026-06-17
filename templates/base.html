@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Quant Model{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script src="{{ url_for('static', filename='js/util.js') }}"></script>
   <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
 </head>
 <body>
@@ -26,14 +27,14 @@
     <span>Fundamentals: fiscal.ai &middot; Benchmarks &amp; gold: yfinance &middot; For research only — not investment advice.</span>
   </footer>
   <script>
-    fetch('/api/meta').then(r=>r.json()).then(m=>{
-      if(m && m.built_at){
+    fetch('/api/meta')
+      .then(safeJson)
+      .then(m => {
         document.getElementById('build-meta').textContent =
-          `${m.n_names||0} names · built ${m.built_at}`;
-      } else {
-        document.getElementById('build-meta').textContent = 'No data — run build_data.py';
-      }
-    });
+          (m && m.built_at) ? `${m.n_names||0} names · built ${m.built_at}`
+                            : 'No data — run build_data.py';
+      })
+      .catch(() => {});
   </script>
   {% block scripts %}{% endblock %}
 
