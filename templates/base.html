@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   <script src="{{ url_for('static', filename='js/util.js') }}"></script>
   <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+  {% block head %}{% endblock %}
 </head>
 <body>
   <header class="topbar">
@@ -17,6 +18,7 @@
     <nav>
       <a href="/edge" class="{% block nav_edge %}{% endblock %}">The Edge</a>
       <a href="/edge-tracker" class="{% block nav_edge_tracker %}{% endblock %}">Edge Tracker</a>
+      <a href="/model" class="{% block nav_model %}{% endblock %}">Model</a>
     </nav>
     <div class="meta" id="build-meta"></div>
   </header>

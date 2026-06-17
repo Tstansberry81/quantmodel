@@ -87,6 +87,11 @@ def page_edge_tracker():
     return render_template("edge_tracker.html")
 
 
+@app.route("/model")
+def page_model():
+    return render_template("model.html")
+
+
 # ---- json api --------------------------------------------------------------
 _EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
