@@ -381,9 +381,19 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                         "sp_cagr": cs, "excess": cg - cs})
     avg_to = float(np.mean(turn[sl]))
     gc = perf(gross[sl], ppy)[0]
+    # best / worst single rebalance period (model, net) + pre-tax total over window
+    bi = int(np.argmax(mr)); wi = int(np.argmin(mr))
+    period_detail = {
+        "hold_days": s["hold"],
+        "best": {"ret": float(mr[bi]), "date": str(dts[bi].date())},
+        "worst": {"ret": float(mr[wi]), "date": str(dts[wi].date())},
+        "pretax_total": stats(mr)["total_return"],   # net of costs, before taxes
+        "pretax_cagr": stats(mr)["cagr"],
+    }
     return {
         "ok": True, "n_rebalances": k,
         "period": [str(dts[0].date()), str(dts[-1].date())],
+        "period_detail": period_detail,
         "spec": {"signal": "acceleration (3m−prior3m)", "hold_days": s["hold"],
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],

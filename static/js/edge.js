@@ -87,6 +87,17 @@ function render(d){
     ['Alpha vs S&P', (ex==null||isNaN(ex)?'—':(ex>=0?'+':'')+fmtPct(ex)), cls(ex), 'Excess return over the S&P for the selected window'],
   ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
+  const pd=d.period_detail||{}, pm=Math.round((pd.hold_days||21)/21);
+  const best=pd.best, worst=pd.worst;
+  document.getElementById('periodstats').innerHTML = [
+    ['Best period', best?((best.ret>=0?'+':'')+fmtPct(best.ret)):'—', cls(best&&best.ret),
+      best?('Strongest single ~'+pm+'-month hold · opened '+best.date):''],
+    ['Worst period', worst?fmtPct(worst.ret):'—', 'neg',
+      worst?('Weakest single ~'+pm+'-month hold · opened '+worst.date):''],
+    ['Pre-tax return', fmtPct(pd.pretax_total)+(amt>1?(' · '+fmtUSD(amt*(pd.pretax_total||0))):''), cls(pd.pretax_total),
+      'Total return over the window, net of costs but BEFORE taxes. This is a high-turnover, short-hold strategy, so gains are mostly short-term — after-tax is materially lower.'],
+  ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+
   const s=d.spec||{};
   document.getElementById('costnote').textContent = (s.cost_bps||10)+'bps';
   document.getElementById('spec').innerHTML = [
