@@ -7,6 +7,13 @@
       "runtimeArgs": ["app.py"],
       "port": 5000,
       "autoPort": true
+    },
+    {
+      "name": "sauron",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "5055", "--directory", "../sauron"],
+      "port": 5055,
+      "autoPort": true
     }
   ]
 }
