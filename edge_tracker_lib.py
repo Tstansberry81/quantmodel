@@ -21,7 +21,7 @@ from qmodel import engine
 
 # full-spec book parameters (must mirror EDGE_SPEC so the tracker == the product)
 HOLD = 42
-N = 20
+N = 10                              # product basket size (10-stock book)
 MCAP_FLOOR = 2e9
 CORR_CAP = 0.50
 CORR_LOOKBACK = 126

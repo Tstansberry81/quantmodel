@@ -3,10 +3,10 @@ const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
 const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
 const sgnPct = v => v==null||isNaN(v) ? "—" : (v>=0?"+":"")+(v*100).toFixed(1)+"%";
 
-let WINDOW = "MAX";          // paper-log horizon: 1Y/2Y/5Y/MAX
-let HOLD = 42;               // rebalance clock: 21/42/63/126 = 1M/2M/3M/6M
-let NSIZE = 20;              // basket size: 10 (concentrated) or 20 (default)
-let MIX = 0.75;              // growth mix: share of basket from >=15%-rev-growth names
+const _O = loadEdgeOpts();   // shared with the Edge backtest page (localStorage)
+let WINDOW = _O.window;      // paper-log horizon: 1Y/2Y/5Y/MAX
+let HOLD = _O.hold;          // rebalance clock: 21/42/63/126 = 1M/2M/3M/6M
+let MIX = _O.mix;            // growth mix: share of basket from >=15%-rev-growth names
 
 async function run(){
   const status=document.getElementById('status');
@@ -14,7 +14,7 @@ async function run(){
   status.textContent='Loading the Edge tracker…';
   document.getElementById('app').style.display='none';
   try{
-    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&n=${NSIZE}&mix=${MIX}`);
+    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&mix=${MIX}`);
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Tracker failed'; return; }
     render(d);
@@ -81,28 +81,23 @@ function render(d){
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
+  syncEdgeBtns();   // reflect options carried over from the Edge backtest page
   document.querySelectorAll('#windowbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#windowbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); WINDOW=b.dataset.w; run();
+      b.classList.add('active'); WINDOW=b.dataset.w; saveEdgeOpt('window',WINDOW); run();
     });
   });
   document.querySelectorAll('#holdbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#holdbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); HOLD=+b.dataset.h; run();
-    });
-  });
-  document.querySelectorAll('#nbtns button').forEach(b=>{
-    b.addEventListener('click',()=>{
-      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); NSIZE=+b.dataset.n; run();
+      b.classList.add('active'); HOLD=+b.dataset.h; saveEdgeOpt('hold',HOLD); run();
     });
   });
   document.querySelectorAll('#mixbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); MIX=+b.dataset.m; run();
+      b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
     });
   });
   run();

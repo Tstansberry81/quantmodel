@@ -277,7 +277,7 @@ def _bench_fwd_hold(series, d, hold):
 
 
 # ---- the robust, tradeable Edge: signal + liquidity + corr-cap + regime + costs
-EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=20, mcap_floor=2e9,
+EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
                  corr_cap=0.50, corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
                  growth_mix=0.75,          # fraction of the basket drawn from the >=15%-rev-growth pool
                  growth_thresh=0.15)       # YoY revenue-growth bar that defines a "growth" name

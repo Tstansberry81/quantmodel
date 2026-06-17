@@ -21,7 +21,7 @@
     <li><b>Liquidity floor</b> &mdash; keep only names &ge; $2B market cap (tradeable size).</li>
     <li><b>Rank</b> by the acceleration signal, highest first.</li>
     <li><b>Correlation cap</b> &mdash; admit a name only if it's &le; 0.50 correlated with every holding already in the basket (so it never becomes eight versions of one bet).</li>
-    <li><b>Hold</b> the top names (10 or 20, selectable), equal-weight.</li>
+    <li><b>Hold</b> the top 10, equal-weight.</li>
     <li><b>Regime switch</b> &mdash; if the S&amp;P 500 is below its 200-day average, cut to 25% invested (rest in cash) to dodge crashes.</li>
     <li><b>Costs</b> &mdash; returns are shown net of ~10bps trading costs.</li>
     <li><b>Growth mix</b> &mdash; optionally draw part of the basket (default 75%) from names with &ge;15% YoY revenue growth; the selector above adjusts it (Off&ndash;100%).</li>
@@ -48,14 +48,6 @@
     <button data-h="126">6M</button>
   </div>
   <span class="small">rebalance cadence (months) — drives the whole book + log</span>
-</div>
-<div class="controls" style="margin-bottom:10px">
-  <label class="small">Basket size:</label>
-  <div class="btnrow" id="nbtns">
-    <button data-n="10">10 (concentrated)</button>
-    <button data-n="20" class="active">20 (default)</button>
-  </div>
-  <span class="small">number of names held — 10 is more concentrated, 20 is steadier</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Growth mix:</label>

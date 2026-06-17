@@ -2,10 +2,10 @@ const fmtPct = v => v==null||isNaN(v) ? "—" : (v*100).toFixed(1)+"%";
 const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
 const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
 
-let WINDOW = "MAX";
-let HOLD = 42;
-let MIX = 0.75;               // growth mix: share of basket from >=15%-rev-growth names
-let NSIZE = 20;               // basket size toggle: 10 (concentrated) or 20 (default)
+const _O = loadEdgeOpts();    // shared with the Edge Tracker (localStorage)
+let WINDOW = _O.window;
+let HOLD = _O.hold;
+let MIX = _O.mix;             // growth mix: share of basket from >=15%-rev-growth names
 const CHARTS = {};
 function mkChart(id,cfg){ if(CHARTS[id]) CHARTS[id].destroy(); CHARTS[id]=new Chart(document.getElementById(id),cfg); }
 
@@ -24,7 +24,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX, n:NSIZE})});
+      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     render(d);
@@ -80,7 +80,7 @@ function render(d){
   document.getElementById('spec').innerHTML = [
     ['Signal', s.signal||'acceleration'],
     ['Holding', Math.round((s.hold_days||42)/21)+'M (~'+(s.hold_days||42)+' trading days)'],
-    ['Basket', (s.n||20)+' names'],
+    ['Basket', (s.n||10)+' names'],
     ['Liquidity floor', '≥ $'+fmtN(s.mcap_floor_bn,0)+'B'],
     ['Correlation cap', fmtN(s.corr_cap,2)],
     ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'],
@@ -100,28 +100,23 @@ function render(d){
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
+  syncEdgeBtns();   // reflect options carried over from the Edge Tracker
   document.querySelectorAll('#windowbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#windowbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); WINDOW=b.dataset.w; run();
+      b.classList.add('active'); WINDOW=b.dataset.w; saveEdgeOpt('window',WINDOW); run();
     });
   });
   document.querySelectorAll('#holdbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#holdbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); HOLD=+b.dataset.h; run();
+      b.classList.add('active'); HOLD=+b.dataset.h; saveEdgeOpt('hold',HOLD); run();
     });
   });
   document.querySelectorAll('#mixbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); MIX=+b.dataset.m; run();
-    });
-  });
-  document.querySelectorAll('#nbtns button').forEach(b=>{
-    b.addEventListener('click',()=>{
-      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); NSIZE=+b.dataset.n; run();
+      b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
     });
   });
   run();
