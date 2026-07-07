@@ -150,5 +150,28 @@ document.addEventListener('DOMContentLoaded',()=>{
       if(LAST) render(LAST);                           // pure client re-scale, no refetch
     });
   }
+  const sync=document.getElementById('syncVision');
+  if(sync){
+    sync.addEventListener('click', async ()=>{
+      const months=Math.round(HOLD/21);
+      const ok=confirm(`Sync the CURRENT backtest to the Vision product?\n\n`
+        +`• Window: ${WINDOW}\n• Rebalance: ${months}-month clock\n• Growth mix: ${Math.round(MIX*100)}%\n• Basket: 10 stocks\n\n`
+        +`This regenerates Vision's data and pushes it live (updates the book + curves).`);
+      if(!ok) return;
+      const msg=document.getElementById('syncMsg');
+      sync.disabled=true; msg.className='small'; msg.textContent='Syncing to Vision…';
+      try{
+        const r=await fetch('/api/sync_vision',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
+        const d=await safeJson(r);
+        if(d.ok){
+          msg.className='small pos';
+          msg.textContent=(d.pushed?'✓ Pushed to Vision':'✓ Saved locally')
+            +' · '+(d.book||[]).slice(0,4).join(', ')+'… · as of '+(d.as_of||'');
+        } else { msg.className='small neg'; msg.textContent='✗ '+(d.reason||'Sync failed'); }
+      }catch(e){ msg.className='small neg'; msg.textContent='✗ Request failed: '+e; }
+      finally{ sync.disabled=false; }
+    });
+  }
   run();
 });

@@ -93,7 +93,7 @@ def page_model():
 
 
 # ---- json api --------------------------------------------------------------
-_EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "MAX"}
+_EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 # Basket size is fixed at the product value (10) in edge_lib.EDGE_SPEC / edge_tracker_lib.N.
@@ -165,6 +165,31 @@ def api_edge_tracker():
 @app.get("/api/meta")
 def api_meta():
     return _safe(engine.meta)
+
+
+@app.post("/api/sync_vision")
+def api_sync_vision():
+    """Push the CURRENT backtest settings (window / rebalance clock / growth mix,
+    10-stock book) to the Vision product via the export pipeline + a GitHub commit
+    (falls back to a local write with no GITHUB_TOKEN)."""
+    body = request.get_json(silent=True) or {}
+    window = (body.get("window", "2Y") or "2Y").upper()
+    if window not in _EDGE_WINDOWS:
+        window = "2Y"
+    try:
+        hold = int(body.get("hold", 21))
+    except (TypeError, ValueError):
+        hold = 21
+    if hold not in _EDGE_HOLDS:
+        hold = 21
+    try:
+        mix = round(float(body.get("mix", 0.75)), 2)
+    except (TypeError, ValueError):
+        mix = 0.75
+    if mix not in _EDGE_MIXES:
+        mix = 0.75
+    import export_sauron
+    return _safe(lambda: export_sauron.export_to_vision(window=window, hold=hold, mix=mix))
 
 
 # ---- in-app chat assistant ("explain the numbers on screen") ----------------

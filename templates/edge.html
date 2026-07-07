@@ -2,7 +2,13 @@
 {% block title %}The Edge · Trading Model{% endblock %}
 {% block nav_edge %}active{% endblock %}
 {% block content %}
-<h1>The Edge <span class="small">— short-term trading model</span></h1>
+<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+  <h1>The Edge <span class="small">— short-term trading model</span></h1>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+    <span id="syncMsg" class="small"></span>
+    <button id="syncVision" type="button" class="sync-vision" title="Push the current backtest settings to the Vision product">Sync data to Vision</button>
+  </div>
+</div>
 <p class="sub">Russell-1000 proxy, ranked on market data only (acceleration momentum), ~1–6 month holding. Liquidity floor + correlation cap + 200-day regime switch. Returns are <b>net of {{ '' }}<span id="costnote">10bps</span> trading costs</b>.</p>
 
 <div class="controls" style="margin-bottom:10px">
@@ -12,6 +18,7 @@
     <button data-w="2Y">2Y</button>
     <button data-w="5Y">5Y</button>
     <button data-w="10Y">10Y</button>
+    <button data-w="20Y">20Y</button>
     <button data-w="MAX" class="active">Max</button>
   </div>
   <span class="small" id="windownote"></span>

@@ -1,24 +1,22 @@
-"""Pipeline: export the in-house Edge model to the Sauron product site.
+"""Pipeline: export the in-house Edge model to the Vision product site.
 
-This repo (the Edge) is the in-house MODEL + viewer. **Sauron** is the consumer
-product: a lightweight static site that just displays the model's output. This
-script runs the model at the launch configuration and writes a single data file
-the Sauron front-end loads (current 10-stock book + 2-year backtest curve +
-headline stats). Re-run it whenever you want to push fresh picks to the product.
+This repo (the Edge) is the in-house MODEL + viewer. **Vision** is the consumer
+product: a lightweight static site (Tstansberry81/vision) that renders the model's
+output. This builds Vision's data file — the current 10-stock book + a primary
+backtest curve + a 20-year track-record curve (each vs S&P) + headline stats.
 
-Product configuration (the spots that read "N/A" in the Sauron mockup):
-  * 2-year window   * 1-month rebalance (hold=21)   * 75% YoY-rev-growth mix
-  * 10-stock equal-weight book   (n=10 comes from EDGE_SPEC / edge_tracker_lib.N)
+Two ways to run it:
+  * CLI:  python export_sauron.py [--window 2Y --hold 21 --mix 0.75]  (writes local)
+  * In-app "Sync to Vision" button -> export_to_vision(window, hold, mix), which
+    pushes vision_data.js to the Vision GitHub repo (GITHUB_TOKEN) so Render
+    auto-redeploys. With no token (dev) it falls back to writing the local file.
 
-Output is written as JS (window.SAURON_DATA = {...}) rather than JSON so the
-static site works when opened directly (file://) without a server or CORS/API
-key. That IS the pipeline: model -> sauron_data.js -> static product.
-
-Usage:  .venv/Scripts/python.exe export_sauron.py [--out PATH]
-Default out: ../sauron/sauron_data.js
+Output is JS (window.VISION_DATA = {...}) not JSON so the static site works even
+opened directly (file://) with no server/CORS/API key.
 """
 from __future__ import annotations
 import argparse
+import base64
 import json
 import os
 from datetime import datetime, timezone
@@ -26,32 +24,39 @@ from datetime import datetime, timezone
 import edge_lib
 import edge_tracker_lib
 
-WINDOW = "2Y"      # 2-year backtest curve (valid: 1Y/2Y/3Y/5Y/10Y/MAX)
-HOLD = 21          # 1-month rebalance clock
-MIX = 0.75         # 75% YoY-revenue-growth mix
-# Note: the per-window summary stats (incl. 10Y) ride along in the export via
-# bt["windows"], regardless of which WINDOW drives the headline curve above.
+WINDOW = "2Y"          # default primary backtest curve (valid: 1Y/2Y/3Y/5Y/10Y/20Y/MAX)
+HOLD = 21              # default 1-month rebalance clock
+MIX = 0.75            # default 75% YoY-revenue-growth mix
+LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the primary
 # basket size n=10 is the product book (edge_lib.EDGE_SPEC / edge_tracker_lib.N)
 
+_REBAL_LABEL = {21: "1M", 42: "2M", 63: "3M", 126: "6M"}
 
-def build() -> dict:
-    bt = edge_lib.run_edge_backtest(window=WINDOW, spec={"hold": HOLD, "growth_mix": MIX})
+
+def build(window: str = WINDOW, hold: int = HOLD, mix: float = MIX) -> dict:
+    """Build Vision's data payload at the given window / rebalance clock / mix.
+    The 20-year track-record curve uses the same clock + mix, window=20Y."""
+    bt = edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix})
     if not bt.get("ok"):
-        raise SystemExit(f"backtest failed: {bt.get('reason')}")
-    tr = edge_tracker_lib.tracker_state(hold=HOLD, window=WINDOW, mix=MIX)
+        raise RuntimeError(f"backtest failed: {bt.get('reason')}")
+    lt = edge_lib.run_edge_backtest(window=LONG_WINDOW, spec={"hold": hold, "growth_mix": mix})
+    if not lt.get("ok"):
+        raise RuntimeError(f"long backtest failed: {lt.get('reason')}")
+    tr = edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix)
     if not tr.get("ok"):
-        raise SystemExit(f"tracker failed: {tr.get('reason')}")
+        raise RuntimeError(f"tracker failed: {tr.get('reason')}")
 
     perf = bt["performance"]["model"]
+    lperf = lt["performance"]["model"]
     book = [{
         "ticker": b["ticker"], "name": b["name"], "sector": b["sector"],
         "weight": b["weight"], "accel": b.get("accel"),
     } for b in tr["current_book"]]
 
     return {
-        "product": "Sauron",
-        "config": {"window": WINDOW, "rebalance": "1M", "hold_days": HOLD,
-                   "growth_mix": MIX, "n": len(book),
+        "product": "Vision",
+        "config": {"window": window, "rebalance": _REBAL_LABEL.get(hold, f"{hold}d"),
+                   "hold_days": hold, "growth_mix": mix, "n": len(book),
                    "cost_bps": bt["spec"].get("cost_bps", 10)},
         "as_of": tr["book_date"],
         "book_date": tr["book_date"],
@@ -61,30 +66,98 @@ def build() -> dict:
         "curve": {"dates": bt["curves"]["dates"],
                   "model": bt["curves"]["model"],
                   "sp500": bt["curves"]["sp500"]},
+        "curve_long": {"window": LONG_WINDOW,
+                       "dates": lt["curves"]["dates"],
+                       "model": lt["curves"]["model"],
+                       "sp500": lt["curves"]["sp500"]},
+        "performance_long": {k: lperf.get(k) for k in
+                             ("cagr", "sharpe", "max_drawdown", "total_return")},
         "windows": bt["windows"],
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "disclaimer": "Backtest, net of ~10bps costs. Not a forecast or investment advice.",
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    default_out = os.path.join(os.path.dirname(__file__), "..", "sauron", "sauron_data.js")
-    ap.add_argument("--out", default=default_out)
-    args = ap.parse_args()
+def payload_js(data: dict) -> str:
+    return ("// Auto-generated by export_sauron.py — do not edit by hand.\n"
+            "window.VISION_DATA = " + json.dumps(data, indent=2) + ";\n")
 
-    data = build()
-    out = os.path.abspath(args.out)
+
+def write_local(payload: str, out: str | None = None) -> str:
+    out = out or os.environ.get("VISION_LOCAL_OUT") or \
+        os.path.join(os.path.dirname(__file__), "..", "vision", "vision_data.js")
+    out = os.path.abspath(out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    payload = "// Auto-generated by export_sauron.py — do not edit by hand.\n"
-    payload += "window.SAURON_DATA = " + json.dumps(data, indent=2) + ";\n"
     with open(out, "w", encoding="utf-8") as f:
         f.write(payload)
+    return out
 
+
+def push_to_github(payload: str, message: str) -> dict:
+    """Commit vision_data.js to the Vision repo via the GitHub contents API.
+    Needs GITHUB_TOKEN (contents:write). Repo/branch/path overridable via env."""
+    token = os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("VISION_REPO", "Tstansberry81/vision")
+    branch = os.environ.get("VISION_BRANCH", "main")
+    path = os.environ.get("VISION_DATA_PATH", "vision_data.js")
+    if not token:
+        return {"pushed": False, "reason": "no GITHUB_TOKEN"}
+    import requests
+    api = f"https://api.github.com/repos/{repo}/contents/{path}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    sha = None
+    g = requests.get(api, params={"ref": branch}, headers=headers, timeout=20)
+    if g.status_code == 200:
+        sha = g.json().get("sha")
+    body = {"message": message, "branch": branch,
+            "content": base64.b64encode(payload.encode("utf-8")).decode("ascii")}
+    if sha:
+        body["sha"] = sha
+    p = requests.put(api, json=body, headers=headers, timeout=20)
+    if p.status_code >= 300:
+        return {"pushed": False, "reason": f"GitHub {p.status_code}: {p.text[:200]}"}
+    return {"pushed": True, "commit": (p.json().get("commit") or {}).get("html_url"),
+            "repo": repo, "branch": branch}
+
+
+def export_to_vision(window: str = WINDOW, hold: int = HOLD, mix: float = MIX,
+                     actor: str | None = None) -> dict:
+    """Build + publish. Pushes to the Vision repo if GITHUB_TOKEN is set (Render then
+    auto-redeploys), else writes the local file (dev). JSON-friendly result."""
+    data = build(window, hold, mix)
+    pj = payload_js(data)
+    cfg = data["config"]
+    msg = (f"Sync Vision — {cfg['window']} / {cfg['rebalance']} / "
+           f"{int(round(cfg['growth_mix']*100))}% mix / {cfg['n']} stocks"
+           + (f" (by {actor})" if actor else ""))
+    if os.environ.get("GITHUB_TOKEN"):
+        res = push_to_github(pj, msg)
+    else:
+        res = {"pushed": False, "local_path": write_local(pj), "reason": "no GITHUB_TOKEN — wrote local file"}
+    return {
+        "ok": bool(res.get("pushed") or res.get("local_path")),
+        "pushed": bool(res.get("pushed")),
+        "as_of": data["as_of"],
+        "config": cfg,
+        "book": [b["ticker"] for b in data["book"]],
+        **{k: v for k, v in res.items() if k in ("commit", "local_path", "reason", "repo")},
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--window", default=WINDOW)
+    ap.add_argument("--hold", type=int, default=HOLD)
+    ap.add_argument("--mix", type=float, default=MIX)
+    args = ap.parse_args()
+
+    data = build(args.window, args.hold, args.mix)
+    out = write_local(payload_js(data), args.out)
     print(f"Wrote {out}")
-    print(f"  as of {data['as_of']} · {data['config']['n']} names · "
-          f"2Y CAGR {data['performance']['cagr']*100:.1f}% / "
-          f"Sharpe {data['performance']['sharpe']:.2f}")
+    print(f"  {data['config']['window']} / {data['config']['rebalance']} / "
+          f"{int(round(data['config']['growth_mix']*100))}% mix · as of {data['as_of']} · "
+          f"CAGR {data['performance']['cagr']*100:.1f}% / Sharpe {data['performance']['sharpe']:.2f}")
     print(f"  book: {', '.join(b['ticker'] for b in data['book'])}")
 
 

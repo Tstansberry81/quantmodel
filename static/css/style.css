@@ -72,6 +72,11 @@ select,input[type=number],button{
 button{cursor:pointer;font-weight:600}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.primary:hover{filter:brightness(1.1)}
+.sync-vision{background:linear-gradient(180deg,#e6c171,#c9962e);color:#1c1408;border:none;
+  border-radius:8px;padding:9px 15px;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;
+  box-shadow:0 6px 16px -10px rgba(201,150,46,.6)}
+.sync-vision:hover{filter:brightness(1.06)}
+.sync-vision:disabled{opacity:.55;cursor:default;filter:none}
 button.ghost:hover{background:var(--panel-2)}
 
 /* ---- equation editor ---- */

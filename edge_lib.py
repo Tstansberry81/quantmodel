@@ -358,7 +358,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     T = len(net)
     wmap = {"1Y": int(round(ppy)), "2Y": int(round(2 * ppy)),
             "3Y": int(round(3 * ppy)), "5Y": int(round(5 * ppy)),
-            "10Y": int(round(10 * ppy)), "MAX": T}
+            "10Y": int(round(10 * ppy)), "20Y": int(round(20 * ppy)), "MAX": T}
     k = min(wmap.get(window, T), T)
     if k < 2:
         return {"ok": False, "reason": "window too short"}
@@ -375,7 +375,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                 "max_drawdown": dd, "total_return": tot}
 
     windows = []
-    for wn in ("1Y", "2Y", "5Y", "10Y", "MAX"):
+    for wn in ("1Y", "2Y", "5Y", "10Y", "20Y", "MAX"):
         kk = min(wmap[wn], T)
         cg, dd, sh = perf(net[T - kk:T], ppy); cs, _, ss = perf(spxf[T - kk:T], ppy)
         windows.append({"w": wn, "cagr": cg, "sharpe": sh, "dd": dd,
