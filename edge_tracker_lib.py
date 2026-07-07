@@ -40,6 +40,15 @@ def _meta(data, ck):
             m.get("sector", "Unknown"))
 
 
+def _latest_price(data, ck):
+    """Latest available close for a holding (from the quant-model price series)."""
+    pr = data.get(ck, {}).get("prices")
+    try:
+        return round(float(pr.iloc[-1]), 2) if pr is not None and len(pr) else None
+    except Exception:
+        return None
+
+
 def _current_book(pan, data, n, mix):
     """The latest rebalance's full-spec picks = the live portfolio.
 
@@ -59,6 +68,7 @@ def _current_book(pan, data, n, mix):
         book.append({
             "ticker": tk, "name": nm, "sector": sec, "weight": w,
             "accel": float(accel.get(ck, float("nan"))),
+            "price": _latest_price(data, ck),
         })
     # show highest-conviction (accel) first
     book.sort(key=lambda r: (r["accel"] if r["accel"] == r["accel"] else -1e9),

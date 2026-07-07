@@ -50,7 +50,7 @@ def build(window: str = WINDOW, hold: int = HOLD, mix: float = MIX) -> dict:
     lperf = lt["performance"]["model"]
     book = [{
         "ticker": b["ticker"], "name": b["name"], "sector": b["sector"],
-        "weight": b["weight"], "accel": b.get("accel"),
+        "weight": b["weight"], "accel": b.get("accel"), "price": b.get("price"),
     } for b in tr["current_book"]]
 
     return {

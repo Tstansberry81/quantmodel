@@ -21,6 +21,13 @@
       "runtimeArgs": ["../partner-portfolios/app.py"],
       "port": 5060,
       "autoPort": true
+    },
+    {
+      "name": "vision",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "5057", "--directory", "../vision"],
+      "port": 5057,
+      "autoPort": true
     }
   ]
 }
