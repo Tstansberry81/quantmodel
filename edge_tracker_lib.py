@@ -22,6 +22,8 @@ from qmodel import engine
 # full-spec book parameters (must mirror EDGE_SPEC so the tracker == the product)
 HOLD = 42
 N = 10                              # product basket size (10-stock book)
+PAPER_N = 7                         # research candidate (2026-07 signal-hunt campaign):
+                                    # paper-tracked forward ALONGSIDE the product book
 MCAP_FLOOR = 2e9
 CORR_CAP = 0.50
 CORR_LOOKBACK = 126
@@ -152,18 +154,34 @@ def _read_snapshots():
     return []
 
 
-def _persist_snapshot(book_date, current_book):
-    """Append the current book + date to the snapshot file the first time we see
-    this rebalance date, so the tracker genuinely accrues forward over real
-    calendar time. Returns the snapshot list (newest last)."""
+def _snap_config(s):
+    """Which forward record a snapshot belongs to. Legacy entries (written before
+    the paper-track split) carry no tag and are the product record."""
+    return s.get("config", "product")
+
+
+def _persist_snapshots(pan, data, mix):
+    """Append the current rebalance's book to the snapshot file for BOTH forward
+    records — the product (n=N) and the n=PAPER_N research candidate — the first
+    time each (config, book_date) pair is seen, so both accrue genuinely forward
+    over real calendar time. Returns the full snapshot list (newest last)."""
     snaps = _read_snapshots()
-    already = any(s.get("book_date") == book_date for s in snaps)
-    if not already:
+    i = pan.T - 1
+    book_date = str(pan.bdates[i].date())
+    changed = False
+    for cfg, nn in (("product", N), (f"paper-n{PAPER_N}", PAPER_N)):
+        if any(_snap_config(s) == cfg and s.get("book_date") == book_date for s in snaps):
+            continue
+        book, _bd = _current_book(pan, data, nn, mix)
         snaps.append({
+            "config": cfg,
+            "n": nn,
             "book_date": book_date,
             "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "tickers": [r["ticker"] for r in current_book],
+            "tickers": [r["ticker"] for r in book],
         })
+        changed = True
+    if changed:
         try:
             os.makedirs(os.path.dirname(SNAPSHOT_PATH), exist_ok=True)
             with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
@@ -178,7 +196,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
     """Assemble the tracker payload consumed by /api/edge_tracker.
 
     `hold` (21/42/63/126 = 1M/2M/3M/6M) sets the rebalance clock; `window`
-    (1Y/2Y/5Y/MAX) trims the paper-log to that horizon; `n` (10/20) sets the
+    (1Y/2Y/5Y/MAX) trims the paper-log to that horizon; `n` (5..10) sets the
     basket size; `mix` (0/.25/.5/.75/1) sets the growth mix. All four mirror the
     backtest page so the tracker can be explored over the same clocks, windows,
     basket sizes, and growth mixes. The log + its hit-rate/excess stats reflect
@@ -187,7 +205,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
     try:
         hold = int(hold) if int(hold) in (21, 42, 63, 126) else HOLD
         window = window if window in ("1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX") else "MAX"
-        n = int(n) if int(n) in (10, 20) else N
+        n = int(n) if 5 <= int(n) <= 10 else N
         mix = round(float(mix), 2)
         if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
             mix = GROWTH_MIX
@@ -201,20 +219,25 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         log = full_log[-k:]
         log_stats = _log_stats(log)
 
-        # The forward record only accrues at the real product config (2M clock,
-        # 20-name book, default growth mix); other clocks/sizes/mixes are
-        # exploratory and must not write phantom snapshots into the live record.
-        snaps = (_persist_snapshot(book_date, current_book)
-                 if hold == HOLD and n == N and mix == GROWTH_MIX else _read_snapshots())
+        # Forward records accrue only at the real product clock + growth mix
+        # (exploratory clocks/mixes must not write phantom snapshots). At that
+        # config BOTH records persist — the 10-stock product book AND the n=7
+        # research candidate — whichever n the viewer happens to be exploring.
+        snaps = (_persist_snapshots(pan, data, GROWTH_MIX)
+                 if hold == HOLD and mix == GROWTH_MIX else _read_snapshots())
+        # the stats card reflects the record matching the viewed basket size
+        viewed_cfg = f"paper-n{PAPER_N}" if n == PAPER_N else "product"
+        vsnaps = [s for s in snaps if _snap_config(s) == viewed_cfg]
 
         stats = {
-            "n_snapshots": len(snaps),
+            "n_snapshots": len(vsnaps),
+            "record": viewed_cfg,
             "n_closed": log_stats["n_closed"],
             "hit_rate": log_stats["hit_rate"],
             "avg_excess": log_stats["avg_excess"],
             "avg_edge_ret": log_stats["avg_edge_ret"],
             "avg_sp_ret": log_stats["avg_sp_ret"],
-            "first_snapshot": snaps[0]["book_date"] if snaps else book_date,
+            "first_snapshot": vsnaps[0]["book_date"] if vsnaps else book_date,
             "window": window,
             "n_total": len(full_log),
         }

@@ -17,7 +17,7 @@ async function safeJson(r) {
 // Both pages read/write the same four controls from localStorage so a setting
 // picked on one page carries over to the other.
 const EDGE_OPTS_KEY = 'edgeOpts';
-const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, mix: 0.75 };
+const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, mix: 0.75, n: 10 };
 
 function loadEdgeOpts() {
   try {
@@ -39,7 +39,8 @@ function syncEdgeBtns() {
   const o = loadEdgeOpts();
   [['#windowbtns', 'w', String(o.window)],
    ['#holdbtns', 'h', String(o.hold)],
-   ['#mixbtns', 'm', String(o.mix)]].forEach(([sel, attr, val]) => {
+   ['#mixbtns', 'm', String(o.mix)],
+   ['#nbtns', 'n', String(o.n)]].forEach(([sel, attr, val]) => {
     document.querySelectorAll(sel + ' button').forEach(b =>
       b.classList.toggle('active', b.dataset[attr] === val));
   });

@@ -96,7 +96,10 @@ def page_model():
 _EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
-# Basket size is fixed at the product value (10) in edge_lib.EDGE_SPEC / edge_tracker_lib.N.
+_EDGE_NS = set(range(5, 11))                # basket-size selector: 5..10 stocks
+# The PRODUCT stays a 10-stock book (edge_lib.EDGE_SPEC / edge_tracker_lib.N);
+# the selector is for exploration. n=7 is the research candidate (2026-07 signal
+# hunt) and is paper-tracked forward alongside the product in the tracker.
 
 
 def _safe(fn):
@@ -109,10 +112,21 @@ def _safe(fn):
         return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
 
-@lru_cache(maxsize=128)
-def _cached_edge_backtest(window: str, hold: int, mix: float):
+@lru_cache(maxsize=256)
+def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     import edge_lib
-    return edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix})
+    return edge_lib.run_edge_backtest(window=window,
+                                      spec={"hold": hold, "growth_mix": mix, "n": n})
+
+
+def _parse_n(raw) -> int:
+    """Basket size 5..10; anything else falls back to the 10-stock product book.
+    (Below 5 a basket is single-name risk and the backtest is noise-dominated.)"""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 10
+    return n if n in _EDGE_NS else 10
 
 
 @app.post("/api/edge_backtest")
@@ -133,13 +147,14 @@ def api_edge_backtest():
         mix = 0.75
     if mix not in _EDGE_MIXES:
         mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
-    return _safe(lambda: _cached_edge_backtest(window, hold, mix))
+    n = _parse_n(body.get("n", 10))
+    return _safe(lambda: _cached_edge_backtest(window, hold, mix, n))
 
 
-@lru_cache(maxsize=128)
-def _cached_tracker(hold: int, window: str, mix: float):
+@lru_cache(maxsize=256)
+def _cached_tracker(hold: int, window: str, mix: float, n: int):
     import edge_tracker_lib
-    return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix)
+    return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
 
 
 @app.get("/api/edge_tracker")
@@ -159,7 +174,8 @@ def api_edge_tracker():
         mix = 0.75
     if mix not in _EDGE_MIXES:
         mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
-    return _safe(lambda: _cached_tracker(hold, window, mix))
+    n = _parse_n(request.args.get("n", 10))
+    return _safe(lambda: _cached_tracker(hold, window, mix, n))
 
 
 @app.get("/api/meta")

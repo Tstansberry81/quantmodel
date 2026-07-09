@@ -7,6 +7,7 @@ const _O = loadEdgeOpts();   // shared with the Edge backtest page (localStorage
 let WINDOW = _O.window;      // paper-log horizon: 1Y/2Y/5Y/MAX
 let HOLD = _O.hold;          // rebalance clock: 21/42/63/126 = 1M/2M/3M/6M
 let MIX = _O.mix;            // growth mix: share of basket from >=15%-rev-growth names
+let NSIZE = _O.n;            // basket size 5..10 (product = 10; n=7 = paper-tracked research book)
 
 async function run(){
   const status=document.getElementById('status');
@@ -14,7 +15,7 @@ async function run(){
   status.textContent='Loading the Edge tracker…';
   document.getElementById('app').style.display='none';
   try{
-    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&mix=${MIX}`);
+    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&mix=${MIX}&n=${NSIZE}`);
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Tracker failed'; return; }
     render(d);
@@ -40,9 +41,12 @@ function render(d){
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
      <td>${fmtPct(b.weight)}</td><td class="${cls(b.accel)}">${fmtN(b.accel,2)}</td></tr>`).join('');
   const mixTxt = spec.growth_mix>0 ? `${Math.round(spec.growth_mix*100)}% growth mix` : 'pure momentum';
+  const recTxt = s.record==='paper-n7'
+    ? ' · n=7 research candidate — its forward record accrues alongside the product book'
+    : (spec.n===10 ? '' : ' · exploratory basket size (no forward record)');
   document.getElementById('bookmeta').textContent =
     `Full-spec Edge picks as of ${d.book_date} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
-    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, corr cap ${fmtN(spec.corr_cap,2)}.`;
+    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, corr cap ${fmtN(spec.corr_cap,2)}${recTxt}.`;
 
   // ---- paper-trading log (newest first) ----
   const log=(d.log||[]).slice().reverse();
@@ -98,6 +102,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
       b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
+    });
+  });
+  document.querySelectorAll('#nbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); NSIZE=+b.dataset.n; saveEdgeOpt('n',NSIZE); run();
     });
   });
   run();

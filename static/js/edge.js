@@ -7,6 +7,7 @@ const _O = loadEdgeOpts();    // shared with the Edge Tracker (localStorage)
 let WINDOW = _O.window;
 let HOLD = _O.hold;
 let MIX = _O.mix;             // growth mix: share of basket from >=15%-rev-growth names
+let NSIZE = _O.n;             // basket size 5..10 (product = 10; research favors 7)
 let AMOUNT = 10000;           // starting capital for the dollar-value view (client-side only)
 let LAST = null;              // last backtest response, so the amount can re-render without refetch
 const CHARTS = {};
@@ -27,7 +28,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
+      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX, n:NSIZE})});
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     LAST=d; render(d);
@@ -142,6 +143,12 @@ document.addEventListener('DOMContentLoaded',()=>{
       b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
     });
   });
+  document.querySelectorAll('#nbtns button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); NSIZE=+b.dataset.n; saveEdgeOpt('n',NSIZE); run();
+    });
+  });
   const amt=document.getElementById('amount');
   if(amt){
     AMOUNT = Math.max(0, parseFloat(amt.value)||0);   // honor the HTML default
@@ -155,7 +162,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     sync.addEventListener('click', async ()=>{
       const months=Math.round(HOLD/21);
       const ok=confirm(`Sync the CURRENT backtest to the Vision product?\n\n`
-        +`• Window: ${WINDOW}\n• Rebalance: ${months}-month clock\n• Growth mix: ${Math.round(MIX*100)}%\n• Basket: 10 stocks\n\n`
+        +`• Window: ${WINDOW}\n• Rebalance: ${months}-month clock\n• Growth mix: ${Math.round(MIX*100)}%\n• Basket: 10 stocks (Vision always ships the product book)\n\n`
         +`This regenerates Vision's data and pushes it live (updates the book + curves).`);
       if(!ok) return;
       const msg=document.getElementById('syncMsg');

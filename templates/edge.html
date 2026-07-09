@@ -45,6 +45,18 @@
   <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
+  <label class="small">Basket size:</label>
+  <div class="btnrow" id="nbtns">
+    <button data-n="5">5</button>
+    <button data-n="6">6</button>
+    <button data-n="7">7</button>
+    <button data-n="8">8</button>
+    <button data-n="9">9</button>
+    <button data-n="10" class="active">10</button>
+  </div>
+  <span class="small">number of stocks held (product = 10 · research favors 7, paper-tracked)</span>
+</div>
+<div class="controls" style="margin-bottom:18px">
   <label class="small">Amount invested:</label>
   <span class="small" style="color:var(--text)">$</span><input id="amount" type="number" value="10000" min="0" step="1000" style="width:120px">
   <span class="small">the dollar value of this stake over the selected backtest window</span>
