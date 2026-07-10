@@ -109,6 +109,7 @@ function render(d){
     ['Correlation cap', fmtN(s.corr_cap,2)],
     ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'],
     ['Growth mix', (s.growth_mix>0 ? fmtN(s.growth_mix*100,0)+'% from ≥'+fmtN((s.growth_thresh||0.15)*100,0)+'% growth names' : 'off (pure momentum)')],
+    ['Rebalance', (s.stagger ? 'two staggered sleeves (½-period offset)' : 'single sleeve')],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:15px">${v}</div></div>`).join('');
 
   document.getElementById('caveat').innerHTML =
@@ -117,7 +118,7 @@ function render(d){
     +'~89% of companies that delisted, worth roughly −3%/yr; <b>(2)</b> the liquidity floor uses market cap as a '
     +'full-history proxy (real point-in-time Russell-1000 + dollar-volume data needed); <b>(3)</b> the recent window '
     +'sits in an unusually momentum-friendly regime. The <i>trustworthy</i> results are the risk-adjusted shape — '
-    +'Sharpe ≈0.9 and the drawdown control (−27% vs the S&amp;P −44%), all-weather behavior, and positive return skew — '
+    +'Sharpe ≈0.9 and the drawdown control (−34% vs the S&amp;P −55%, measured daily), all-weather behavior, and positive return skew — '
     +'not the in-sample CAGR. After honest haircuts (survivorship + the lumpy momentum tailwind), a defensible '
     +'<b>forward expectation is ~11–13%/yr, ~3–5 pts over the S&amp;P</b>. '
     +'Next credibility fixes: point-in-time data (Norgate) and higher cost assumptions.';

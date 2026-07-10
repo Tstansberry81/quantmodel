@@ -57,8 +57,8 @@ class EdgePanel:
         self.rf_per = config.RISK_FREE_ANNUAL / self.ppy   # per-period risk-free
 
 
-@lru_cache(maxsize=6)
-def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE) -> EdgePanel:
+@lru_cache(maxsize=10)
+def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0) -> EdgePanel:
     """Build the trading panel once. Each row = one candidate's short-horizon
     market-data signals + forward return. NO fundamentals."""
     data = D.load_bt_data(); bm = D.benchmarks()
@@ -94,6 +94,8 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE) -> EdgePanel:
 
     lag = np.timedelta64(90, "D")
     monthly = spx.index[spx.index >= spx.index.min() + pd.Timedelta(days=400)]
+    # offset_days shifts the whole rebalance grid (for staggered sleeves); 0 = default.
+    monthly = monthly[offset_days:]
     rebal = list(monthly[:-hold][::hold])
     panels, bdates, spxf, ndxf, ma200_on = [], [], [], [], []
     use_pit = USE_PIT_UNIVERSE and PIT.is_real_pit()
@@ -297,7 +299,10 @@ def _bench_fwd_hold(series, d, hold):
 EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
                  corr_cap=0.50, corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
                  growth_mix=0.75,          # fraction of the basket drawn from the >=15%-rev-growth pool
-                 growth_thresh=0.15)       # YoY revenue-growth bar that defines a "growth" name
+                 growth_thresh=0.15,       # YoY revenue-growth bar that defines a "growth" name
+                 stagger=True)             # two sleeves offset by half a period (removes rebalance-
+                                           # date luck); performance measured on the DAILY curve so
+                                           # maxDD reflects true intra-period peak-to-trough.
 
 
 def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh):
@@ -351,67 +356,172 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
     return pan.bdates, gross, net, turn, pan.spxf, pan.ndxf, holds
 
 
+# ---- daily buy-and-hold simulation + staggered sleeves ----------------------
+def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
+                  growth_mix, growth_thresh):
+    """Full-spec per-rebalance selection + membership turnover for one panel."""
+    holds, turn, prev = [], [], None
+    for i, df in enumerate(pan.panels):
+        d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
+        cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
+                            growth_mix, growth_thresh)
+        cur = set(cks)
+        turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
+        prev = cur; holds.append(cks)
+    return holds, np.array(turn)
+
+
+def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps):
+    """Daily return Series for one sleeve: buy-and-hold each book for `hold` days
+    from t+1 (weights drift), regime scales the window, cost on the entry day.
+    NaN outside the sleeve's active days so sleeves can be averaged cleanly."""
+    cal = M.index
+    out = pd.Series(np.nan, index=cal)
+    rf_d = config.RISK_FREE_ANNUAL / 252.0
+    for i, cks in enumerate(holds):
+        loc = int(cal.searchsorted(pan.bdates[i], side="right"))     # t+1 entry (exec lag)
+        win = cal[loc: loc + hold]
+        names = [c for c in cks if c in M.columns]
+        if len(win) == 0 or not names:
+            continue
+        sub = np.nan_to_num(M.loc[win, names].to_numpy(float))
+        w = np.full(len(names), 1.0 / len(names))
+        on = bool(pan.ma200_on[i]) if regime_expo is not None else True
+        rets = np.empty(len(win))
+        for dd in range(len(win)):
+            r = sub[dd]; pr = float(np.dot(w, r))
+            if not on:
+                pr = regime_expo * pr + (1 - regime_expo) * rf_d
+            rets[dd] = pr
+            g = w * (1 + r); ssum = g.sum()
+            if ssum > 0:
+                w = g / ssum
+        rets[0] -= (cost_bps / 1e4) * float(turn[i])                 # entry-day cost
+        out.loc[win] = rets
+    return out
+
+
+@lru_cache(maxsize=16)
+def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
+                signal_key, growth_mix, growth_thresh, stagger):
+    """Daily NET return series for the tradeable Edge (staggered sleeves when
+    stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
+    the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough."""
+    weights = dict(signal_key)
+    M = D.daily_return_matrix()
+    offsets = (0, hold // 2) if stagger else (0,)
+    series, turns, prim_holds = [], [], None
+    for off in offsets:
+        pan = load_edge_panel(hold=hold, offset_days=off)
+        holds, turn = _select_holds(pan, n, weights, mcap_floor, corr_cap,
+                                    corr_lookback, growth_mix, growth_thresh)
+        series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps))
+        turns.append(float(np.mean(turn)))
+        if off == 0:
+            prim_holds = (pan.bdates, holds)
+    both = pd.concat(series, axis=1)
+    model = both.mean(axis=1, skipna=True).dropna()      # 50/50 where both active
+    idx = model.index
+    bm = D.benchmarks()
+    spx = bm["SP500"].reindex(idx, method="ffill").pct_change().fillna(0.0)
+    ndx = bm["NASDAQ"].reindex(idx, method="ffill").pct_change().fillna(0.0)
+    return (idx, model.to_numpy(), spx.to_numpy(), ndx.to_numpy(),
+            float(np.mean(turns)), prim_holds)
+
+
+def _perf_daily(r):
+    """CAGR / maxDD / Sharpe from a DAILY net-return array (annualized at 252)."""
+    r = np.nan_to_num(np.asarray(r, float))
+    if len(r) < 2:
+        return 0.0, 0.0, 0.0
+    eq = np.cumprod(1 + r)
+    cagr = eq[-1] ** (252.0 / len(r)) - 1 if eq[-1] > 0 else -1.0
+    dd = float((eq / np.maximum.accumulate(eq) - 1).min())
+    sh = float(np.sqrt(252) * np.nanmean(r) / np.nanstd(r)) if np.nanstd(r) > 0 else 0.0
+    return float(cagr), dd, sh
+
+
+def _sortino_daily(r):
+    r = np.nan_to_num(np.asarray(r, float))
+    dn = np.minimum(r, 0.0); d = float(np.sqrt(np.mean(dn ** 2)))
+    return float(np.sqrt(252) * np.mean(r) / d) if d > 0 else 0.0
+
+
 def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     """Backtest the tradeable Edge over a trailing window. Returns curves +
     performance in the same shape the website's chart code expects (NET of costs)."""
     s = {**EDGE_SPEC, **(spec or {})}
-    pan = load_edge_panel(hold=s["hold"])
-    ppy = pan.ppy                                      # true rebalances/year for this hold
-    bdates, gross, net, turn, spxf, ndxf, _holds = _edge_full(
-        s["hold"], s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
-        s["regime_expo"], s["cost_bps"], tuple(sorted(s["signal"].items())),
-        float(s.get("growth_mix", 0.0) or 0.0), float(s.get("growth_thresh", 0.15)))
-    T = len(net)
-    wmap = {"1Y": int(round(ppy)), "2Y": int(round(2 * ppy)),
-            "3Y": int(round(3 * ppy)), "5Y": int(round(5 * ppy)),
-            "10Y": int(round(10 * ppy)), "20Y": int(round(20 * ppy)), "MAX": T}
+    hold = s["hold"]
+    stagger = bool(s.get("stagger", True))
+    sig = tuple(sorted(s["signal"].items()))
+    gm = float(s.get("growth_mix", 0.0) or 0.0); gt = float(s.get("growth_thresh", 0.15))
+    idx, model, spx, ndx, avg_to, prim = _edge_daily(
+        hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
+        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger)
+    # gross (cost-free) daily model, for the gross->net turnover card
+    gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
+                                   s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt, stagger)
+    T = len(model)
+    wmap = {"1Y": 252, "2Y": 504, "3Y": 756, "5Y": 1260, "10Y": 2520,
+            "20Y": 5040, "MAX": T}
     k = min(wmap.get(window, T), T)
-    if k < 2:
+    if k < 20:
         return {"ok": False, "reason": "window too short"}
     sl = slice(T - k, T)
-    mr, sr, nr, dts = net[sl], spxf[sl], ndxf[sl], bdates[T - k:T]
+    mr, sr, nr = model[sl], spx[sl], ndx[sl]
+    dts = idx[T - k:T]
 
-    def curve(r):
-        return [round(float(x), 4) for x in np.cumprod(1 + np.nan_to_num(r))]
+    def curve(r):                                    # growth-of-$1, subsampled for payload
+        eq = np.cumprod(1 + np.nan_to_num(r))
+        stride = max(1, len(eq) // 300)
+        keep = list(range(0, len(eq), stride))
+        if keep[-1] != len(eq) - 1:
+            keep.append(len(eq) - 1)
+        return keep, [round(float(eq[i]), 4) for i in keep]
 
     def stats(r):
-        c, dd, sh = perf(r, ppy)
+        c, dd, sh = _perf_daily(r)
         tot = float(np.cumprod(1 + np.nan_to_num(r))[-1] - 1)
-        return {"cagr": c, "sharpe": sh, "sortino": sortino(r, ppy),
+        return {"cagr": c, "sharpe": sh, "sortino": _sortino_daily(r),
                 "max_drawdown": dd, "total_return": tot}
 
     windows = []
     for wn in ("1Y", "2Y", "5Y", "10Y", "20Y", "MAX"):
         kk = min(wmap[wn], T)
-        cg, dd, sh = perf(net[T - kk:T], ppy); cs, _, ss = perf(spxf[T - kk:T], ppy)
+        cg, dd, sh = _perf_daily(model[T - kk:T]); cs, _, _ = _perf_daily(spx[T - kk:T])
         windows.append({"w": wn, "cagr": cg, "sharpe": sh, "dd": dd,
                         "sp_cagr": cs, "excess": cg - cs})
-    avg_to = float(np.mean(turn[sl]))
-    gc = perf(gross[sl], ppy)[0]
-    # best / worst single rebalance period (model, net) + pre-tax total over window
-    bi = int(np.argmax(mr)); wi = int(np.argmin(mr))
+    gc = _perf_daily(gmodel[len(gmodel) - min(k, len(gmodel)):])[0]
+
+    # best / worst single hold-length window (rolling), from the daily net series
+    mser = pd.Series(mr, index=dts)
+    roll = (1 + mser).rolling(hold).apply(np.prod, raw=True) - 1
+    roll = roll.dropna()
+    bi = roll.idxmax(); wi = roll.idxmin()
     period_detail = {
-        "hold_days": s["hold"],
-        "best": {"ret": float(mr[bi]), "date": str(dts[bi].date())},
-        "worst": {"ret": float(mr[wi]), "date": str(dts[wi].date())},
+        "hold_days": hold,
+        "best": {"ret": float(roll.max()), "date": str(bi.date())},
+        "worst": {"ret": float(roll.min()), "date": str(wi.date())},
         "pretax_total": stats(mr)["total_return"],   # net of costs, before taxes
         "pretax_cagr": stats(mr)["cagr"],
     }
+    keep, mcurve = curve(mr)
+    dstr = [str(dts[i].date()) for i in keep]
+    ann_to = round(avg_to * (252.0 / hold), 1)
     return {
-        "ok": True, "n_rebalances": k,
+        "ok": True, "n_rebalances": int(k / hold),
         "period": [str(dts[0].date()), str(dts[-1].date())],
         "period_detail": period_detail,
-        "spec": {"signal": "acceleration (3m−prior3m)", "hold_days": s["hold"],
+        "spec": {"signal": "acceleration (3m−prior3m)", "hold_days": hold,
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
-                 "cost_bps": s["cost_bps"],
-                 "growth_mix": float(s.get("growth_mix", 0.0) or 0.0),
-                 "growth_thresh": float(s.get("growth_thresh", 0.15))},
+                 "cost_bps": s["cost_bps"], "stagger": stagger,
+                 "growth_mix": gm, "growth_thresh": gt},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},
-        "curves": {"dates": [str(d.date()) for d in dts],
-                   "model": curve(mr), "sp500": curve(sr), "nasdaq": curve(nr)},
+        "curves": {"dates": dstr, "model": mcurve,
+                   "sp500": curve(sr)[1], "nasdaq": curve(nr)[1]},
         "windows": windows,
-        "turnover": {"per_rebalance": round(avg_to, 3), "annualized": round(avg_to * ppy, 1),
+        "turnover": {"per_rebalance": round(avg_to, 3), "annualized": ann_to,
                      "cost_bps": s["cost_bps"], "gross_cagr": gc,
                      "net_cagr": stats(mr)["cagr"]},
     }
