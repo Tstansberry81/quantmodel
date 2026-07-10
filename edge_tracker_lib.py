@@ -4,7 +4,7 @@ Surfaces the CURRENT Edge book (today's full-spec picks) plus a running
 paper-trading log seeded from backtest history, so the model is validated
 forward, out-of-sample, in real time.
 
-Read-only against edge_lib (imported as E) and qmodel.engine; the only thing
+Read-only against edge_lib (imported as E) and the edge_data layer; the only thing
 this module *writes* is a small snapshot file at data/cache/edge_tracker.json,
 which accrues one entry per distinct rebalance book seen over real calendar
 time. Nothing here mutates the backtest or its caches.
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 import edge_lib as E
-from qmodel import engine
+import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
 
 # full-spec book parameters (must mirror EDGE_SPEC so the tracker == the product)
 HOLD = 42
@@ -210,7 +210,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
             mix = GROWTH_MIX
         pan = E.load_edge_panel(hold=hold)
-        data = engine._load_bt_data()
+        data = engine.load_bt_data()
         current_book, book_date = _current_book(pan, data, n, mix)
         full_log = _paper_log(pan, data, hold, n, mix)
 

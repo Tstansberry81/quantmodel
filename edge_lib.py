@@ -1,15 +1,16 @@
 """The Edge -- shared harness for the SHORT-TERM TRADING model (Porter & Co).
 
-This is the trading product, NOT the long-term fundamental engine. It scans the
-Russell-1000-proxy universe and ranks on MARKET DATA ONLY (short-horizon momentum
-/ relative strength / acceleration -- BIC-on-a-short-clock), no fundamentals.
-Holding period ~30-60 days. Two proprietary overlays get tested on top:
+It scans the Russell-1000-proxy universe and ranks on MARKET DATA ONLY
+(short-horizon momentum / relative strength / acceleration), no fundamentals apart
+from an optional revenue-growth tilt. Holding period ~30-60 days. Two proprietary
+overlays get tested on top:
   * correlation cap (<=0.50) so the basket isn't eight versions of one bet,
   * a 200-day-MA regime switch that raises cash below the line.
 
-Original long-term model is preserved untouched in qmodel/ (and qmodel_original/).
-This module reuses qmodel's cached data loaders + daily return matrix but builds
-its own market-data-only panel and evaluates over 1Y / 2Y / 5Y windows.
+All data is read through the self-contained edge_data layer (cached prices,
+benchmarks, daily-return matrix). Signals are formed on close t but the trade
+enters at close t+1 (a realistic one-day execution lag). Evaluated over
+1Y / 2Y / 5Y / MAX windows.
 
 No statsmodels in the venv; any stats are done by hand in numpy.
 """
@@ -19,8 +20,7 @@ from functools import lru_cache
 import numpy as np, pandas as pd
 import os
 import config
-from qmodel import engine
-import tech_bias_lib as TB           # reuse daily_return_matrix + benchmark loaders
+import edge_data as D                # self-contained Edge data layer (no Slow Burn deps)
 import pit_universe as PIT           # pluggable PIT Russell-1000 universe layer
 
 # Restrict each rebalance to REAL point-in-time Russell-1000 members (and price
@@ -61,7 +61,7 @@ class EdgePanel:
 def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE) -> EdgePanel:
     """Build the trading panel once. Each row = one candidate's short-horizon
     market-data signals + forward return. NO fundamentals."""
-    data = engine._load_bt_data(); bm = engine._benchmarks_cached()
+    data = D.load_bt_data(); bm = D.benchmarks()
     spx = bm["SP500"].dropna(); mret_full = spx.pct_change()
     ndx = bm["NASDAQ"].dropna()
     ma200 = spx.rolling(200).mean()
@@ -112,7 +112,7 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE) -> EdgePanel:
             if pit_set and ck not in pit_set:
                 continue
             pos = int(np.searchsorted(P["pidx"], dt, side="right")) - 1
-            if pos < LB or (len(P["arr"]) - 1 - pos) < hold:
+            if pos < LB or (len(P["arr"]) - 1 - pos) < hold + 1:  # +1: enter next day (t+1)
                 continue
             mc = asof(P["fidx"], P["mcap"], dlag)
             if mc is None or np.isnan(mc):
@@ -144,7 +144,11 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE) -> EdgePanel:
                 "rs_63": ret_63 - m63,                  # relative strength vs market
                 "vol_21": float(w[-21:].std(ddof=1) * np.sqrt(252)) if sd > 0 else np.nan,
                 "rev_growth": asof(P["fidx"], P["rgr"], dlag),   # YoY rev growth (90d-lagged)
-                "fwd_ret": arr[pos + hold] / arr[pos] - 1,
+                # EXECUTION LAG: signal is formed on close t but the trade enters at
+                # close t+1 (you can't compute the whole cross-section AND trade the
+                # close it was computed from). Validated benign-to-favorable, so the
+                # tradeable next-day entry is the honest default.
+                "fwd_ret": arr[pos + 1 + hold] / arr[pos + 1] - 1,
             })
         panels.append(pd.DataFrame(rows)); bdates.append(pd.Timestamp(d))
         # benchmark forward return over the FULL hold-day window (hold-aware!)
@@ -191,7 +195,7 @@ def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126):
     d = df.dropna(subset=["fwd_ret"]).copy()
     d["_c"] = score(d, weights)
     order = list(d.sort_values("_c", ascending=False)["company_key"])
-    M = TB.daily_return_matrix()
+    M = D.daily_return_matrix()
     win = (M[M.index <= asof] if asof is not None else M).tail(lookback)
     chosen = []
     for ck in order:
@@ -215,7 +219,7 @@ def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126):
 
 # ---- returns + evaluation ----------------------------------------------------
 def daily_from_holdings(pan: EdgePanel, holds: list, hold: int = HOLD) -> pd.Series:
-    M = TB.daily_return_matrix(); cal = M.index
+    M = D.daily_return_matrix(); cal = M.index
     pieces = []
     for i, d in enumerate(pan.bdates):
         cks = [c for c in holds[i] if c in M.columns]
@@ -281,10 +285,12 @@ def eval_windows(pan: EdgePanel, rets, label=""):
 
 
 def _bench_fwd_hold(series, d, hold):
-    past = series[series.index <= d]; fwd = series[series.index > d]
-    if past.empty or len(fwd) < 1:
+    # Match the stock-side execution lag: enter at the first close after d (t+1)
+    # and exit hold days later, so the benchmark is measured over the same window.
+    fwd = series[series.index > d]
+    if len(fwd) < hold + 1:
         return np.nan
-    return float(fwd.iloc[min(hold, len(fwd)) - 1] / past.iloc[-1] - 1)
+    return float(fwd.iloc[hold] / fwd.iloc[0] - 1)
 
 
 # ---- the robust, tradeable Edge: signal + liquidity + corr-cap + regime + costs

@@ -1,9 +1,8 @@
 """The Edge — short-term trading product (local site).
 
-The long-term "Slow Burn" model + curated Portfolio now live in their own
-codebase ("personal quant model"). This app serves the Edge backtest and the
-Edge Tracker. The qmodel package is retained as a library (the Edge reuses its
-cached-data loaders + benchmarks via edge_lib / tech_bias_lib).
+Serves the Edge backtest and the Edge Tracker. All data is read through the
+self-contained edge_data layer (cached prices, benchmarks, artifacts); the model
+lives in edge_lib.
 
 Run:  python app.py     ->  http://127.0.0.1:5000
 """
@@ -16,7 +15,7 @@ from functools import lru_cache
 from flask import Flask, render_template, request, jsonify, redirect
 from werkzeug.exceptions import HTTPException
 
-from qmodel import engine   # cached-data loaders + meta used by the Edge + footer
+import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
 
 
 def _load_dotenv():

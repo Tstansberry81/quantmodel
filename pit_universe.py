@@ -73,8 +73,8 @@ def _ticker_to_key() -> dict:
     We also key on a normalised ticker (dots/dashes stripped) so 'BRK.A' and
     'BRK-A' both resolve.
     """
-    from qmodel import engine
-    data = engine._load_bt_data()
+    import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
+    data = engine.load_bt_data()
     out: dict[str, str] = {}
     for ck, blob in data.items():
         meta = blob.get("meta") or {}
