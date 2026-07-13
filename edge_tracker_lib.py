@@ -12,9 +12,11 @@ time. Nothing here mutates the backtest or its caches.
 from __future__ import annotations
 import json
 import os
+import pickle
 from datetime import datetime, timezone
 
 import numpy as np
+import pandas as pd
 
 import edge_lib as E
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
@@ -34,6 +36,86 @@ GROWTH_MIX = 0.75                   # default mirrors the product (EDGE_SPEC gro
 GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
 
 SNAPSHOT_PATH = os.path.join("data", "cache", "edge_tracker.json")
+
+# --- GP/assets quality-gate research sleeve (2026-07 fundamental campaign) -----
+# Paper-tracked forward ALONGSIDE the product + n=7 books. Overlay = the accel
+# pick AFTER routing out the lowest-gross-profitability names (Novy-Marx quality).
+# Only the ~gate-0.40 n=10 config survived the stage-2 rigor (n=7 framings
+# conflicted), so that is what we track. Depends on the fiscal.ai canonical
+# fundamentals cache; if that file is absent (e.g. the live Render deploy), the
+# record is simply skipped so the product tracker is unaffected.
+GP_FUND_PKL = os.path.join("data", "cache", "fund_canonical.pkl")
+GP_GATE_FRAC = 0.40                 # drop the bottom 40% by GP/assets
+GP_GATE_N = 10                      # basket size that passed rigor
+_FUND_CACHE = None
+
+# --- upgrade lineage --------------------------------------------------------
+# Each tracked forward record carries the DELTAS vs the shipped production book,
+# so as validated research upgrades accumulate over sessions we can see exactly
+# what each candidate sleeve changes. "paper-upgraded" = production + every
+# upgrade validated this campaign (currently: continuous regime + GP/assets gate).
+UPGRADES = {
+    "product": [],
+    f"paper-n{PAPER_N}": [f"basket size {PAPER_N} (vs {N})"],
+    "paper-upgraded": [
+        "continuous 200dMA regime — evaluate the de-risk rule DAILY instead of "
+        "freezing it per rebalance; cuts fast-crash drawdown (COVID-2020 ~-34%->-25%) "
+        "at tied Sharpe (rigor 2026-07-13: DD win concentrated in fast V-crashes, "
+        "mild first-half whipsaw, DSR pass)",
+        "GP/assets quality gate — drop the bottom 40% by gross profitability "
+        "(Novy-Marx) before the accel pick; shallower DD + higher Sortino at n=10 "
+        "(stage-2 rigor 2026-07-13)",
+    ],
+}
+
+
+def _load_fund():
+    """Lazy-load the canonical fundamentals pickle ({}=absent, cached once)."""
+    global _FUND_CACHE
+    if _FUND_CACHE is None:
+        try:
+            with open(GP_FUND_PKL, "rb") as f:
+                _FUND_CACHE = pickle.load(f)
+        except Exception:
+            _FUND_CACHE = {}
+    return _FUND_CACHE
+
+
+def _gp_assets_asof(fd, when: pd.Timestamp) -> float:
+    """GP/assets from the latest annual report filed on/before `when` (PIT-safe)."""
+    idx = fd.index.values.astype("datetime64[ns]")
+    pos = int(np.searchsorted(idx, np.datetime64(when, "ns"), side="right")) - 1
+    if pos < 0:
+        return float("nan")
+    row = fd.iloc[pos]
+    def num(k):
+        try:
+            return float(row.get(k))
+        except Exception:
+            return float("nan")
+    gp, ta, rev, cogs = num("gross_profit"), num("total_assets"), num("revenue"), num("cogs")
+    if not (gp == gp) and rev == rev and cogs == cogs:      # fall back to rev - cogs
+        gp = rev - cogs
+    return gp / ta if (gp == gp and ta == ta and ta) else float("nan")
+
+
+def _gp_gate_tickers(pan, data, n=GP_GATE_N, frac=GP_GATE_FRAC):
+    """Latest-rebalance GP-gated book tickers, or None if fundamentals are absent.
+    Cheap: only the current cross-section is scored (no full-panel attach)."""
+    fund = _load_fund()
+    if not fund:
+        return None
+    i = pan.T - 1
+    df = pan.panels[i]; bd = pd.Timestamp(pan.bdates[i])
+    d = (df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df).copy()
+    d["_gpa"] = [(_gp_assets_asof(fund[ck], bd) if ck in fund else float("nan"))
+                 for ck in d["company_key"]]
+    thr = pd.to_numeric(d["_gpa"], errors="coerce").quantile(frac)
+    keep = (d["_gpa"] >= thr) | d["_gpa"].isna()            # never exclude on missing data
+    d = d[keep]
+    cks = E._blend_select(d, pan.bdates[i], n, SIGNAL, CORR_CAP,
+                          CORR_LOOKBACK, GROWTH_MIX, GROWTH_THRESH)
+    return [_meta(data, ck)[0] for ck in cks]
 
 
 def _meta(data, ck):
@@ -179,8 +261,29 @@ def _persist_snapshots(pan, data, mix):
             "book_date": book_date,
             "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "tickers": [r["ticker"] for r in book],
+            "upgrades": UPGRADES.get(cfg, []),
         })
         changed = True
+    # "paper-upgraded" = production + every research upgrade validated this campaign
+    # (continuous regime + GP/assets gate). Holdings differ from production via the
+    # GP gate (the continuous-regime upgrade is an exposure rule, tracked as a noted
+    # delta, not a holdings change). Only persisted if the fundamentals cache exists
+    # (e.g. skipped on the live Render deploy), so the product tracker is unaffected.
+    if not any(_snap_config(s) == "paper-upgraded" and s.get("book_date") == book_date
+               for s in snaps):
+        gp_tickers = _gp_gate_tickers(pan, data)
+        if gp_tickers:
+            snaps.append({
+                "config": "paper-upgraded",
+                "n": GP_GATE_N,
+                "gate_frac": GP_GATE_FRAC,
+                "signal": "acceleration + continuous 200dMA regime + GP/assets quality gate",
+                "book_date": book_date,
+                "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "tickers": gp_tickers,
+                "upgrades": UPGRADES.get("paper-upgraded", []),
+            })
+            changed = True
     if changed:
         try:
             os.makedirs(os.path.dirname(SNAPSHOT_PATH), exist_ok=True)
