@@ -68,6 +68,32 @@ UPGRADES = {
     ],
 }
 
+# --- exposure-rule candidates tested but NOT (yet) adopted -------------------
+# Decision trail for the market-timing rules from the round-3/4 research, kept so
+# the lineage is complete even though these are exposure rules (they change the
+# book's EXPOSURE, not its holdings, so they can't be tracked as ticker snapshots).
+# The paper-upgraded sleeve uses continuous-200dMA (the robust-drawdown choice).
+EXPOSURE_CANDIDATES = {
+    "continuous-200dMA": {
+        "status": "ADOPTED — paper-upgraded sleeve",
+        "rule": "evaluate the 200dMA de-risk DAILY instead of freezing it per rebalance",
+        "result_n10": "18.5% / 0.91 / -26%  (vs product 18.9 / 0.90 / -34)",
+        "note": "robust drawdown reducer — helps or ties in EVERY crisis (GFC/COVID/2022); "
+                "tied Sharpe, small CAGR give-up. Rigor 2026-07-13: DSR pass, NW-t ~1.85 (n=10).",
+    },
+    "panic-state (Daniel-Moskowitz 2016 JFE)": {
+        "status": "TESTED 2026-07-13, NOT adopted — logged alternative",
+        "rule": "de-risk to 0.25 ONLY when S&P < 200dMA AND realized vol > its rolling median "
+                "(the targeted crash state, vs the blanket 200dMA)",
+        "result_n10": "19.6% / 0.94 / -28%  (vs product 18.9 / 0.90 / -34); NW-t +2.12 sig, DSR pass",
+        "note": "BEST Sharpe/return of the campaign's timing rules AND excess-vs-S&P stays "
+                "significant — BUT the drawdown protection is COVID-2020-specific: it was "
+                "WORSE than production in the slow GFC (-17->-22) and 2022 (-18->-21) bears "
+                "(stays invested in low-vol grinding bears). A return/Sharpe enhancer, not "
+                "robust crash insurance. Revisit if the priority shifts from drawdown to Sharpe.",
+    },
+}
+
 
 def _load_fund():
     """Lazy-load the canonical fundamentals pickle ({}=absent, cached once)."""

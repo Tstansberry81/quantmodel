@@ -69,6 +69,11 @@ def market_exposures(idx):
         "tsmom12_1":  pd.Series(np.where(mom > 0, 1.0, 0.0), index=spx.index),
         "voltgt_mkt": np.minimum(1.0, rv_tgt / rv),
         "vrp":        pd.Series(np.where(vrp > 0, 1.0, 0.25), index=spx.index),
+        # Daniel-Moskowitz "panic state": de-risk to 0.25 ONLY when the market is
+        # both below its 200dMA AND in a high-vol regime (realized vol > its rolling
+        # median) -- the targeted crash state, vs the blanket 200dMA filter.
+        "panic":      pd.Series(np.where((spx < sma200) & (rv > rv_tgt), 0.25, 1.0),
+                                index=spx.index),
     }
     out = {}
     for k, s in raw.items():
@@ -119,7 +124,7 @@ def main():
         exps = market_exposures(pure.index)
         exps["voltgt_book"] = book_voltarget(pure)
         order = ["d200_25", "d200_cash", "sma10mo", "tsmom12_1",
-                 "voltgt_mkt", "voltgt_book", "vrp"]
+                 "voltgt_mkt", "voltgt_book", "vrp", "panic"]
         base_sh = metrics(prod.to_numpy())[1]; base_dd = metrics(prod.to_numpy())[3]
         for k in order:
             (c, sh, so, dd), ex = apply_rule(pure, exps[k])

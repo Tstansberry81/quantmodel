@@ -50,23 +50,26 @@ def main():
         prod, spx = book_daily(n, E.EDGE_SPEC["regime_expo"])     # per-rebalance 200dMA@0.25
         pure, _ = book_daily(n, 1.0)                              # pure book (overlay canvas)
         exps = market_exposures(pure.index)
-        # continuous: apply the 200dMA@0.25 rule daily to the pure book
-        e = exps["d200_25"]
-        de = e.reindex(pure.index).ffill().fillna(1.0)
-        cont = pd.Series(de.values * pure.values + (1 - de.values) * RF_D
-                         - 1e-4 * de.diff().abs().fillna(0).values, index=pure.index)
+        prods = prod.reindex(pure.index).fillna(0.0)
         spx_al = spx.reindex(pure.index).fillna(0.0)
 
-        for lab, series in (("PRODUCT", prod.reindex(pure.index).fillna(0.0)), ("CONTINUOUS", cont)):
+        def overlay(key):
+            e = exps[key].reindex(pure.index).ffill().fillna(1.0)
+            return pd.Series(e.values * pure.values + (1 - e.values) * RF_D
+                             - 1e-4 * e.diff().abs().fillna(0).values, index=pure.index)
+        rules = {"CONTINUOUS": overlay("d200_25"), "PANIC": overlay("panic")}
+
+        for lab, series in [("PRODUCT", prods)] + list(rules.items()):
             c, sh, so, dd = metrics(series.values)
             print(f"  {lab:<16} CAGR {c*100:5.1f}%  Sharpe {sh:.2f}  Sortino {so:.2f}  maxDD {dd*100:.0f}%")
         print("  --- significance / deflation ---")
-        rigor_row("PRODUCT", prod.reindex(pure.index).fillna(0.0), spx_al)
-        rigor_row("CONTINUOUS", cont, spx_al)
+        rigor_row("PRODUCT", prods, spx_al)
+        for lab, series in rules.items():
+            rigor_row(lab, series, spx_al)
 
         print("  --- half-split (is the DD win in BOTH halves?) ---")
         h = len(pure) // 2
-        for lab, series in (("PRODUCT", prod.reindex(pure.index).fillna(0.0)), ("CONTINUOUS", cont)):
+        for lab, series in [("PRODUCT", prods)] + list(rules.items()):
             r = series.values
             _, s1, _, d1 = metrics(r[:h]); _, s2, _, d2 = metrics(r[h:])
             print(f"  {lab:<16} 1H Sharpe {s1:.2f} maxDD {d1*100:4.0f}%   2H Sharpe {s2:.2f} maxDD {d2*100:4.0f}%")
@@ -74,10 +77,10 @@ def main():
         print("  --- crisis-window drawdowns (concentration check) ---")
         for cname, (a, b) in CRISES.items():
             m = (pure.index >= a) & (pure.index <= b)
-            dprod = maxdd(prod.reindex(pure.index).fillna(0.0).values[m])
-            dcont = maxdd(cont.values[m])
-            print(f"  {cname:<16} PRODUCT {dprod*100:5.0f}%   CONTINUOUS {dcont*100:5.0f}%   "
-                  f"delta {(dcont-dprod)*100:+.0f}pt")
+            dprod = maxdd(prods.values[m])
+            deltas = "   ".join(f"{lab} {maxdd(s.values[m])*100:4.0f}% ({(maxdd(s.values[m])-dprod)*100:+.0f})"
+                                for lab, s in rules.items())
+            print(f"  {cname:<16} PRODUCT {dprod*100:5.0f}%   {deltas}")
 
 
 if __name__ == "__main__":
