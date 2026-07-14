@@ -49,6 +49,15 @@ GP_GATE_FRAC = 0.40                 # drop the bottom 40% by GP/assets
 GP_GATE_N = 10                      # basket size that passed rigor
 _FUND_CACHE = None
 
+# --- PEAD earnings-confirmation gate (round-5 earnings dynamics) -------------
+# Route out momentum names whose MOST RECENT earnings surprise was negative
+# (time-series SUE<0, Foster-Olsen-Shevlin). Improves the book on the 2016+
+# coverage window (modest, 2nd-half-loaded, sub-significant -> paper-track, not
+# production). Needs the quarterly-EPS cache; skipped if absent.
+PEAD_QEPS_PKL = os.path.join("data", "cache", "quarterly_eps.pkl")
+PEAD_N = 10
+_QEPS_CACHE = None
+
 # --- upgrade lineage --------------------------------------------------------
 # Each tracked forward record carries the DELTAS vs the shipped production book,
 # so as validated research upgrades accumulate over sessions we can see exactly
@@ -58,13 +67,18 @@ UPGRADES = {
     "product": [],
     f"paper-n{PAPER_N}": [f"basket size {PAPER_N} (vs {N})"],
     "paper-upgraded": [
-        "continuous 200dMA regime — evaluate the de-risk rule DAILY instead of "
-        "freezing it per rebalance; cuts fast-crash drawdown (COVID-2020 ~-34%->-25%) "
-        "at tied Sharpe (rigor 2026-07-13: DD win concentrated in fast V-crashes, "
-        "mild first-half whipsaw, DSR pass)",
         "GP/assets quality gate — drop the bottom 40% by gross profitability "
         "(Novy-Marx) before the accel pick; shallower DD + higher Sortino at n=10 "
         "(stage-2 rigor 2026-07-13)",
+        "[the continuous 200dMA regime this sleeve pioneered was PROMOTED TO "
+        "PRODUCTION 2026-07-13, so it is no longer a delta vs the shipped book]",
+    ],
+    "paper-pead": [
+        "PEAD earnings-confirmation gate — drop momentum names whose most recent "
+        "earnings surprise was negative (time-series SUE<0, Foster-Olsen-Shevlin, "
+        "reported quarterly EPS only); +CAGR and +Sharpe on the 2016+ coverage "
+        "window at tied/better DD (n=10). Modest, 2nd-half-loaded, sub-significant "
+        "(NW-t<2, ~10yr window) — paper-track candidate, not production.",
     ],
 }
 
@@ -139,6 +153,48 @@ def _gp_gate_tickers(pan, data, n=GP_GATE_N, frac=GP_GATE_FRAC):
     thr = pd.to_numeric(d["_gpa"], errors="coerce").quantile(frac)
     keep = (d["_gpa"] >= thr) | d["_gpa"].isna()            # never exclude on missing data
     d = d[keep]
+    cks = E._blend_select(d, pan.bdates[i], n, SIGNAL, CORR_CAP,
+                          CORR_LOOKBACK, GROWTH_MIX, GROWTH_THRESH)
+    return [_meta(data, ck)[0] for ck in cks]
+
+
+def _load_qeps():
+    """Lazy-load the quarterly-EPS pickle ({}=absent, cached once)."""
+    global _QEPS_CACHE
+    if _QEPS_CACHE is None:
+        try:
+            with open(PEAD_QEPS_PKL, "rb") as f:
+                _QEPS_CACHE = pickle.load(f)
+        except Exception:
+            _QEPS_CACHE = {}
+    return _QEPS_CACHE
+
+
+def _sue_asof(df, when: pd.Timestamp) -> float:
+    """Most-recent time-series SUE announced on/before `when` (PIT-safe), or NaN."""
+    eps = pd.to_numeric(df["eps"], errors="coerce")
+    d = eps - eps.shift(4)                                   # seasonal (YoY quarter) diff
+    sue = (d / d.rolling(8, min_periods=4).std()).dropna()
+    if len(sue) == 0:
+        return float("nan")
+    idx = sue.index.values.astype("datetime64[ns]")
+    pos = int(np.searchsorted(idx, np.datetime64(when, "ns"), side="right")) - 1
+    return float(sue.values[pos]) if pos >= 0 else float("nan")
+
+
+def _pead_gate_tickers(pan, data, n=PEAD_N):
+    """Latest book after routing out names whose most-recent earnings surprise was
+    negative (SUE<0). None if the quarterly-EPS cache is absent."""
+    qeps = _load_qeps()
+    if not qeps:
+        return None
+    i = pan.T - 1
+    df = pan.panels[i]; bd = pd.Timestamp(pan.bdates[i])
+    d = (df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df).copy()
+    d["_sue"] = [(_sue_asof(qeps[ck], bd) if ck in qeps else float("nan"))
+                 for ck in d["company_key"]]
+    s = pd.to_numeric(d["_sue"], errors="coerce")
+    d = d[(s >= 0) | s.isna()]                              # keep positive-surprise + unknown
     cks = E._blend_select(d, pan.bdates[i], n, SIGNAL, CORR_CAP,
                           CORR_LOOKBACK, GROWTH_MIX, GROWTH_THRESH)
     return [_meta(data, ck)[0] for ck in cks]
@@ -308,6 +364,23 @@ def _persist_snapshots(pan, data, mix):
                 "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "tickers": gp_tickers,
                 "upgrades": UPGRADES.get("paper-upgraded", []),
+            })
+            changed = True
+    # "paper-pead" = accel book after the PEAD earnings-confirmation gate (drop
+    # names with a negative most-recent earnings surprise). Needs the quarterly-EPS
+    # cache; skipped if absent so the product tracker is unaffected.
+    if not any(_snap_config(s) == "paper-pead" and s.get("book_date") == book_date
+               for s in snaps):
+        pead_tickers = _pead_gate_tickers(pan, data)
+        if pead_tickers:
+            snaps.append({
+                "config": "paper-pead",
+                "n": PEAD_N,
+                "signal": "acceleration + PEAD earnings-confirmation gate (drop SUE<0)",
+                "book_date": book_date,
+                "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "tickers": pead_tickers,
+                "upgrades": UPGRADES.get("paper-pead", []),
             })
             changed = True
     if changed:
