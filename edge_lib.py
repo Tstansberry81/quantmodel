@@ -300,9 +300,14 @@ EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
                  corr_cap=0.50, corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
                  growth_mix=0.75,          # fraction of the basket drawn from the >=15%-rev-growth pool
                  growth_thresh=0.15,       # YoY revenue-growth bar that defines a "growth" name
-                 stagger=True)             # two sleeves offset by half a period (removes rebalance-
+                 stagger=True,             # two sleeves offset by half a period (removes rebalance-
                                            # date luck); performance measured on the DAILY curve so
                                            # maxDD reflects true intra-period peak-to-trough.
+                 continuous_regime=True)   # evaluate the 200dMA de-risk DAILY across the hold window
+                                           # (not frozen at rebalance). Robust drawdown reducer -- helps
+                                           # or ties in every crisis, tied Sharpe (2026-07 research);
+                                           # catches fast intra-window crashes a per-rebalance regime
+                                           # rides through (e.g. COVID-2020: -34% -> -26% at n=10).
 
 
 def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh):
@@ -371,10 +376,29 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
     return holds, np.array(turn)
 
 
-def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps):
+@lru_cache(maxsize=1)
+def _ma200_daily_state():
+    """Daily boolean on the return-matrix calendar: is the S&P above its 200-day
+    MA, judged at the PRIOR close (causal, no look-ahead)? True where the MA isn't
+    yet defined (early history) -- matching the per-rebalance regime's convention
+    of staying invested when the state is unknown."""
+    M = D.daily_return_matrix(); cal = M.index
+    spx = D.benchmarks()["SP500"].dropna()
+    ma = spx.rolling(200).mean()
+    on = pd.Series(np.where(ma.notna(), (spx > ma).to_numpy(), True), index=spx.index)
+    on = on.reindex(cal, method="ffill").shift(1).fillna(True)        # prior-close state
+    return on.to_numpy(bool)
+
+
+def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, regime_daily=None):
     """Daily return Series for one sleeve: buy-and-hold each book for `hold` days
     from t+1 (weights drift), regime scales the window, cost on the entry day.
-    NaN outside the sleeve's active days so sleeves can be averaged cleanly."""
+    NaN outside the sleeve's active days so sleeves can be averaged cleanly.
+
+    `regime_daily`: optional daily boolean array (S&P>200dMA, causal) aligned to
+    M's calendar. When provided AND regime_expo is set, the de-risk is applied per
+    DAY across the hold window (continuous regime) rather than frozen at the
+    rebalance date. None -> the original per-rebalance behaviour."""
     cal = M.index
     out = pd.Series(np.nan, index=cal)
     rf_d = config.RISK_FREE_ANNUAL / 252.0
@@ -386,11 +410,15 @@ def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps):
             continue
         sub = np.nan_to_num(M.loc[win, names].to_numpy(float))
         w = np.full(len(names), 1.0 / len(names))
-        on = bool(pan.ma200_on[i]) if regime_expo is not None else True
+        on_rebal = bool(pan.ma200_on[i]) if regime_expo is not None else True
         rets = np.empty(len(win))
         for dd in range(len(win)):
             r = sub[dd]; pr = float(np.dot(w, r))
-            if not on:
+            if regime_daily is not None and (loc + dd) < len(regime_daily):
+                on = bool(regime_daily[loc + dd])        # continuous: this day's state
+            else:
+                on = on_rebal                            # per-rebalance (or fallback)
+            if regime_expo is not None and not on:
                 pr = regime_expo * pr + (1 - regime_expo) * rf_d
             rets[dd] = pr
             g = w * (1 + r); ssum = g.sum()
@@ -403,19 +431,23 @@ def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps):
 
 @lru_cache(maxsize=16)
 def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
-                signal_key, growth_mix, growth_thresh, stagger):
+                signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False):
     """Daily NET return series for the tradeable Edge (staggered sleeves when
     stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
-    the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough."""
+    the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough.
+
+    continuous_regime=True evaluates the 200dMA de-risk per DAY across each hold
+    window (a robust drawdown reducer) instead of freezing it at the rebalance."""
     weights = dict(signal_key)
     M = D.daily_return_matrix()
+    rd = _ma200_daily_state() if (continuous_regime and regime_expo is not None) else None
     offsets = (0, hold // 2) if stagger else (0,)
     series, turns, prim_holds = [], [], None
     for off in offsets:
         pan = load_edge_panel(hold=hold, offset_days=off)
         holds, turn = _select_holds(pan, n, weights, mcap_floor, corr_cap,
                                     corr_lookback, growth_mix, growth_thresh)
-        series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps))
+        series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:
             prim_holds = (pan.bdates, holds)
@@ -455,12 +487,13 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     stagger = bool(s.get("stagger", True))
     sig = tuple(sorted(s["signal"].items()))
     gm = float(s.get("growth_mix", 0.0) or 0.0); gt = float(s.get("growth_thresh", 0.15))
+    cr = bool(s.get("continuous_regime", False))
     idx, model, spx, ndx, avg_to, prim = _edge_daily(
         hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
-        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger)
+        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr)
     # gross (cost-free) daily model, for the gross->net turnover card
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
-                                   s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt, stagger)
+                                   s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt, stagger, cr)
     T = len(model)
     wmap = {"1Y": 252, "2Y": 504, "3Y": 756, "5Y": 1260, "10Y": 2520,
             "20Y": 5040, "MAX": T}
@@ -516,7 +549,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
                  "cost_bps": s["cost_bps"], "stagger": stagger,
-                 "growth_mix": gm, "growth_thresh": gt},
+                 "growth_mix": gm, "growth_thresh": gt, "continuous_regime": cr},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},
         "curves": {"dates": dstr, "model": mcurve,
                    "sp500": curve(sr)[1], "nasdaq": curve(nr)[1]},
