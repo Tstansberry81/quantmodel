@@ -376,6 +376,19 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
     return holds, np.array(turn)
 
 
+@lru_cache(maxsize=64)
+def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
+                         corr_lookback, growth_mix, growth_thresh):
+    """Selection is the SAME for the net and gross backtest passes (cost doesn't
+    change which names are picked), and it's the dominant cost (~8s/sleeve via the
+    correlation cap). Cache it on the hashable spec so the gross pass — and repeat
+    backtests at a different cost/window — reuse it instead of re-selecting."""
+    pan = load_edge_panel(hold=hold, offset_days=offset_days)
+    holds, turn = _select_holds(pan, n, dict(signal_key), mcap_floor, corr_cap,
+                                corr_lookback, growth_mix, growth_thresh)
+    return pan, holds, turn
+
+
 @lru_cache(maxsize=1)
 def _ma200_daily_state():
     """Daily boolean on the return-matrix calendar: is the S&P above its 200-day
@@ -444,9 +457,8 @@ def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_
     offsets = (0, hold // 2) if stagger else (0,)
     series, turns, prim_holds = [], [], None
     for off in offsets:
-        pan = load_edge_panel(hold=hold, offset_days=off)
-        holds, turn = _select_holds(pan, n, weights, mcap_floor, corr_cap,
-                                    corr_lookback, growth_mix, growth_thresh)
+        pan, holds, turn = _select_holds_cached(hold, off, n, signal_key, mcap_floor,
+                                                corr_cap, corr_lookback, growth_mix, growth_thresh)
         series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:

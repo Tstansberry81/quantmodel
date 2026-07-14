@@ -118,6 +118,28 @@ def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
                                       spec={"hold": hold, "growth_mix": mix, "n": n})
 
 
+def _warm_caches():
+    """Precompute the DEFAULT product backtest (+ tracker) on boot so the first
+    real visitor is served from cache instead of eating the ~30s cold build (panel
+    + correlation-cap selection). Each gunicorn worker has its own in-process
+    lru_cache, so this runs once per worker — exactly what's needed. All windows
+    reuse the same cached daily series, so warming MAX warms every window."""
+    import time as _t
+    t0 = _t.time()
+    try:
+        _cached_edge_backtest("MAX", 42, 0.75, 10)          # the default /edge view
+        import edge_tracker_lib
+        edge_tracker_lib.tracker_state()                    # tracker shares the panels
+        app.logger.info("cache warm done in %.0fs", _t.time() - t0)
+    except Exception:
+        app.logger.exception("cache warm failed")
+
+
+if os.environ.get("EDGE_WARM_ON_BOOT", "1") == "1":
+    import threading
+    threading.Thread(target=_warm_caches, name="edge-warm", daemon=True).start()
+
+
 def _parse_n(raw) -> int:
     """Basket size 5..10; anything else falls back to the 10-stock product book.
     (Below 5 a basket is single-name risk and the backtest is noise-dominated.)"""
