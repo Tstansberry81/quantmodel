@@ -106,6 +106,11 @@ _EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX"}
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 _EDGE_NS = set(range(5, 11))                # basket-size selector: 5..10 stocks
+# Per-IP bucket for the compute endpoints. The caches (above) bound TOTAL work;
+# this bounds the RATE at which a cold cache can be walked, so one client can't
+# monopolise the single worker. Generous enough that real UI clicking never trips it.
+_bt_hits: dict[str, list] = defaultdict(list)
+_BT_RATE, _BT_WINDOW = 30, 60               # 30 requests / minute / IP
 # The PRODUCT stays a 10-stock book (edge_lib.EDGE_SPEC / edge_tracker_lib.N);
 # the selector is for exploration. n=7 is the research candidate (2026-07 signal
 # hunt) and is paper-tracked forward alongside the product in the tracker.
@@ -121,7 +126,11 @@ def _safe(fn):
         return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
 
-@lru_cache(maxsize=256)
+# Public selector space = windows(7) x holds(4) x mixes(5) x n(6) = 840 combos.
+# Cache ABOVE that so a client cycling parameters can never evict-and-recompute:
+# each combo is computed at most once per worker. (Entries are result dicts with
+# small curves, ~tens of KB -> ~25MB fully populated.)
+@lru_cache(maxsize=1024)
 def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     return edge_lib.run_edge_backtest(window=window,
                                       spec={"hold": hold, "growth_mix": mix, "n": n})
@@ -160,6 +169,8 @@ def _parse_n(raw) -> int:
 
 @app.post("/api/edge_backtest")
 def api_edge_backtest():
+    if not _rate_ok(_client_ip(), _BT_RATE, _BT_WINDOW, _bt_hits):
+        return jsonify({"ok": False, "reason": "Too many requests — please wait a moment."})
     body = request.get_json(silent=True) or {}
     window = (body.get("window", "MAX") or "MAX").upper()
     if window not in _EDGE_WINDOWS:
@@ -180,13 +191,15 @@ def api_edge_backtest():
     return _safe(lambda: _cached_edge_backtest(window, hold, mix, n))
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=1024)            # same 840-combo space — never evict (see above)
 def _cached_tracker(hold: int, window: str, mix: float, n: int):
     return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
 
 
 @app.get("/api/edge_tracker")
 def api_edge_tracker():
+    if not _rate_ok(_client_ip(), _BT_RATE, _BT_WINDOW, _bt_hits):
+        return jsonify({"ok": False, "reason": "Too many requests — please wait a moment."})
     try:
         hold = int(request.args.get("hold", 42))
     except (TypeError, ValueError):
@@ -246,9 +259,11 @@ def _client_ip() -> str:
     return (fwd.split(",")[0].strip() if fwd else request.remote_addr) or "?"
 
 
-def _rate_ok(ip: str, limit: int = 20, window: int = 60) -> bool:
+def _rate_ok(ip: str, limit: int = 20, window: int = 60, hits=None) -> bool:
+    """Sliding-window per-IP limiter. `hits` selects the bucket so the chat and the
+    compute endpoints are limited independently."""
     now = time.time()
-    q = _chat_hits[ip]
+    q = (_chat_hits if hits is None else hits)[ip]
     while q and q[0] < now - window:
         q.pop(0)
     if len(q) >= limit:

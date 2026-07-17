@@ -9,7 +9,12 @@ services:
     # only if you slim the data bundle first.
     plan: standard
     buildCommand: "pip install -r requirements.txt && python fetch_data.py"
-    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 600"
+    # timeout 240: a real backtest is ~30-60s (cold panel build for a non-default
+    # clock ~1-2min), so 4min is generous headroom while capping how long a wedged
+    # request can hold a thread. 1 worker is deliberate — each worker holds its own
+    # ~400MB of panels, so more workers would OOM the 2GB plan before adding throughput
+    # (the work is CPU-bound anyway). Throughput comes from the caches, not concurrency.
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 240"
     healthCheckPath: /api/meta
     envVars:
       - key: PYTHON_VERSION

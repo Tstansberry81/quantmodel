@@ -333,7 +333,13 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
     return sel[:n]
 
 
-@lru_cache(maxsize=16)
+# The heavy layer. Its key space over the PUBLIC selector options is
+# hold(4) x n(6) x growth_mix(5) = 120 distinct computations (windows are cheap
+# slices of these, so they cost nothing extra). Size the cache ABOVE that space so
+# entries are never evicted: total heavy work is then bounded at 120 per worker for
+# the life of the process, no matter how many parameter combos get requested.
+# Entries are small (a handful of ~250-float arrays), so this costs ~MBs.
+@lru_cache(maxsize=160)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                signal_key, growth_mix=0.0, growth_thresh=0.15):
     """Compute the full-history Edge once (cached). Returns the per-period gross
