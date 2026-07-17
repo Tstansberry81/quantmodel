@@ -16,6 +16,16 @@ from flask import Flask, render_template, request, jsonify, redirect
 from werkzeug.exceptions import HTTPException
 
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
+# Import the model modules eagerly, at module scope. These MUST NOT be imported
+# lazily inside request handlers: the boot warm-up thread and an incoming request
+# would then race to `import edge_lib`, and whichever loses grabs the half-built
+# module out of sys.modules -> "partially initialized module ... has no attribute
+# run_edge_backtest". Importing here completes the import once, single-threaded,
+# before the warm thread starts. (Module import is cheap; the heavy panel build
+# stays lazy behind lru_cache inside edge_lib.)
+import edge_lib
+import edge_tracker_lib
+import export_sauron        # imports edge_lib/edge_tracker_lib too — same reason
 
 
 def _load_dotenv():
@@ -113,7 +123,6 @@ def _safe(fn):
 
 @lru_cache(maxsize=256)
 def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
-    import edge_lib
     return edge_lib.run_edge_backtest(window=window,
                                       spec={"hold": hold, "growth_mix": mix, "n": n})
 
@@ -128,7 +137,6 @@ def _warm_caches():
     t0 = _t.time()
     try:
         _cached_edge_backtest("MAX", 42, 0.75, 10)          # the default /edge view
-        import edge_tracker_lib
         edge_tracker_lib.tracker_state()                    # tracker shares the panels
         app.logger.info("cache warm done in %.0fs", _t.time() - t0)
     except Exception:
@@ -174,7 +182,6 @@ def api_edge_backtest():
 
 @lru_cache(maxsize=256)
 def _cached_tracker(hold: int, window: str, mix: float, n: int):
-    import edge_tracker_lib
     return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
 
 
@@ -225,7 +232,6 @@ def api_sync_vision():
         mix = 0.75
     if mix not in _EDGE_MIXES:
         mix = 0.75
-    import export_sauron
     return _safe(lambda: export_sauron.export_to_vision(window=window, hold=hold, mix=mix))
 
 
