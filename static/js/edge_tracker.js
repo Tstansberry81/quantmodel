@@ -39,20 +39,32 @@ function render(d){
   // ---- current book table ----
   document.querySelector('#book tbody').innerHTML = (d.current_book||[]).map(b=>
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
-     <td>${fmtPct(b.weight)}</td><td class="${cls(b.accel)}">${fmtN(b.accel,2)}</td></tr>`).join('');
+     <td>${fmtPct(b.weight)}</td><td class="${cls(b.accel)}">${fmtN(b.accel,2)}</td>
+     <td class="${cls(b.ret_todate)}">${b.ret_todate==null?'—':sgnPct(b.ret_todate)}</td></tr>`).join('');
   const mixTxt = spec.growth_mix>0 ? `${Math.round(spec.growth_mix*100)}% growth mix` : 'pure momentum';
   const recTxt = s.record==='paper-n7'
     ? ' · n=7 research candidate — its forward record accrues alongside the product book'
     : (spec.n===10 ? '' : ' · exploratory basket size (no forward record)');
+  // the book is the position opened at the last rebalance and still held —
+  // "since open" is a mark to the latest close, not a finished trade
+  const heldTxt = s.book_is_live
+    ? `Open position — bought at the ${d.book_date} rebalance, still held; "since open" is marked to the latest close`
+    : `Full-spec Edge picks as of ${d.book_date}`;
+  const regimeTxt = s.book_regime_on === false
+    ? ` · MARKET BELOW ITS 200-DAY AVERAGE: exposure cut to ${fmtPct(s.book_exposure)}, rest in cash`
+    : '';
   document.getElementById('bookmeta').textContent =
-    `Full-spec Edge picks as of ${d.book_date} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
-    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, corr cap ${fmtN(spec.corr_cap,2)}${recTxt}.`;
+    `${heldTxt} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
+    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
+    +`corr cap ${fmtN(spec.corr_cap,2)}${recTxt}${regimeTxt}.`;
 
   // ---- paper-trading log (newest first) ----
   const log=(d.log||[]).slice().reverse();
   document.querySelector('#log tbody').innerHTML = log.map((t,i)=>{
     const open = t.status==='OPEN';
-    const badge = open ? '<span class="pos">● OPEN</span>' : '<span style="color:#8b949e">closed</span>';
+    const badge = open
+      ? `<span class="pos">● OPEN</span>${t.mark_to_market?'<br><span class="small" style="color:#8b949e">marked to market</span>':''}`
+      : '<span style="color:#8b949e">closed</span>';
     const h=t.holdings||[];
     const toggle = h.length
       ? `<button class="port-toggle" type="button" data-i="${i}" aria-expanded="false">▸ ${h.length} names</button>`

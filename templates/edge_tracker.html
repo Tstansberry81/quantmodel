@@ -3,7 +3,7 @@
 {% block nav_edge_tracker %}active{% endblock %}
 {% block content %}
 <h1>Edge Tracker <span class="small">— live paper portfolio</span></h1>
-<p class="sub">The current Edge book (today's picks) plus a running paper-trading log: each rebalance snapshot and its realized return vs the S&amp;P, tracked forward to validate the backtest out-of-sample.</p>
+<p class="sub">The position the Edge is holding right now &mdash; opened at the most recent rebalance and marked to the latest close &mdash; plus a running paper-trading log: every finished rebalance and its realized return vs the S&amp;P, tracked forward to validate the backtest out-of-sample.</p>
 
 <div class="panel">
   <h2>How The Edge picks &mdash; the model</h2>
@@ -82,9 +82,9 @@
   <div class="cards" id="headline"></div>
 
   <div class="panel">
-    <h2>Current book <span class="small">— this rebalance's holdings</span></h2>
+    <h2>Current book <span class="small">— the position open right now</span></h2>
     <table id="book">
-      <thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Signal (accel)</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Signal (accel)</th><th>Since open</th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="small" id="bookmeta"></p>

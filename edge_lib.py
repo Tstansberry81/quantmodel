@@ -73,7 +73,9 @@ def window_k(window: str, n_days: int) -> int:
 
 
 class EdgePanel:
-    def __init__(self, panels, bdates, spxf, ndxf, ma200_on, mkt_daily, sectors, hold):
+    def __init__(self, panels, bdates, spxf, ndxf, ma200_on, mkt_daily, sectors, hold,
+                 live_panel=None, live_date=None, live_regime_on=True,
+                 live_spx_todate=float("nan")):
         self.panels = panels          # list[DataFrame] per rebalance
         self.bdates = bdates          # DatetimeIndex
         self.spxf = spxf              # S&P fwd return per period (over the FULL hold window)
@@ -85,6 +87,14 @@ class EdgePanel:
         self.hold = hold                          # holding period in trading days
         self.ppy = 252.0 / hold                   # rebalances per year (annualization)
         self.rf_per = config.RISK_FREE_ANNUAL / self.ppy   # per-period risk-free
+        # ---- the still-open position (see load_edge_panel) --------------------
+        # Deliberately kept OUT of `panels`: these rows have no realized forward
+        # return, so the backtest must never see them. `fwd_todate` marks each
+        # name to the latest close instead.
+        self.live_panel = live_panel              # DataFrame | None
+        self.live_date = live_date                # Timestamp | None
+        self.live_regime_on = live_regime_on      # market above its 200dMA at live_date
+        self.live_spx_todate = live_spx_todate    # S&P return since live_date
 
 
 @lru_cache(maxsize=10)
@@ -127,11 +137,20 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
     # offset_days shifts the whole rebalance grid (for staggered sleeves); 0 = default.
     monthly = monthly[offset_days:]
     rebal = list(monthly[:-hold][::hold])
+    # The scheduled rebalance grid runs `hold` days past the backtest panel's
+    # last date. That final entry is the position a live trader following the
+    # Edge opened and is STILL HOLDING -- no realized forward return yet, which
+    # is exactly why the backtest grid stops short of it. Build it here (same
+    # prep, same rules) but keep it out of `panels`.
+    sched = list(monthly[::hold])
+    live_d = sched[-1] if (sched and (not rebal or sched[-1] != rebal[-1])) else None
     panels, bdates, spxf, ndxf, ma200_on = [], [], [], [], []
+    live_rows, live_date, live_regime_on, live_spx_todate = None, None, True, np.nan
     use_pit = USE_PIT_UNIVERSE and PIT.is_real_pit()
     spx_end = np.datetime64(pd.Timestamp(spx.index[-1]), "ns")   # sample end, for delist detection
 
-    for d in rebal:
+    for d in (rebal + ([live_d] if live_d is not None else [])):
+        is_live = live_d is not None and d == live_d
         dt = np.datetime64(pd.Timestamp(d), "ns"); dlag = dt - lag
         # market trailing returns for relative strength
         mpos = int(np.searchsorted(spx.index.values.astype("datetime64[ns]"), dt, side="right")) - 1
@@ -149,7 +168,15 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                 continue
             n_fwd = len(P["arr"]) - 1 - pos
             full_fwd = n_fwd >= hold + 1          # +1: enter next day (t+1)
-            if not full_fwd:
+            if is_live:
+                # No forward window exists yet for the open position. Require the
+                # name to still be trading at the rebalance (so a ticker that died
+                # months ago can't be resurrected into the live book on stale
+                # prices) and to have the t+1 bar the entry is priced at.
+                if P["pidx"][-1] < dt - np.timedelta64(7, "D") or n_fwd < 1:
+                    continue
+                full_fwd = False
+            elif not full_fwd:
                 # Series ends inside the hold window. Normally skip (the stock
                 # is unbuyable-through-death in this data); under the delist
                 # stress knob include it as a truncated position -- but only if
@@ -179,7 +206,7 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
             if ok.sum() > 60 and wm[ok].var() > 0:
                 beta = float(np.cov(w[ok], wm[ok])[0, 1] / wm[ok].var())
             ret_63 = arr[pos] / arr[pos - 63] - 1
-            rows.append({
+            row = {
                 "company_key": ck, "sector": P["sector"], "pit_mcap": mc, "beta": beta,
                 "ret_21": arr[pos] / arr[pos - 21] - 1,
                 "ret_63": ret_63,
@@ -192,21 +219,35 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                 # EXECUTION LAG: signal is formed on close t but the trade enters at
                 # close t+1 (you can't compute the whole cross-section AND trade the
                 # close it was computed from). Validated benign-to-favorable, so the
-                # tradeable next-day entry is the honest default. Under the delist
-                # stress knob a dying name is instead truncated at its last trade,
-                # with the haircut applied -- same t+1 entry.
+                # tradeable next-day entry is the honest default. On the LIVE
+                # rebalance no window has finished yet; under the delist stress knob
+                # a dying name is truncated at its last trade with the haircut
+                # applied -- every branch enters at the same t+1 close.
                 "fwd_ret": (arr[pos + 1 + hold] / arr[pos + 1] - 1) if full_fwd
-                           else (arr[-1] * (1.0 + DELIST_HAIRCUT)) / arr[pos + 1] - 1,
-            })
+                           else (np.nan if is_live
+                                 else (arr[-1] * (1.0 + DELIST_HAIRCUT)) / arr[pos + 1] - 1),
+            }
+            if is_live:                       # mark the open position to the latest close
+                row["fwd_todate"] = arr[-1] / arr[pos + 1] - 1
+            rows.append(row)
+        regime_on = bool(spx.iloc[mpos] > ma200.iloc[mpos]) if not np.isnan(ma200.iloc[mpos]) else True
+        if is_live:
+            live_rows = pd.DataFrame(rows)
+            live_date = pd.Timestamp(d)
+            live_regime_on = regime_on
+            live_spx_todate = float(spx.iloc[-1] / spx.iloc[mpos] - 1)
+            continue
         panels.append(pd.DataFrame(rows)); bdates.append(pd.Timestamp(d))
         # benchmark forward return over the FULL hold-day window (hold-aware!)
         spxf.append(_bench_fwd_hold(spx, d, hold))
         ndxf.append(_bench_fwd_hold(ndx, d, hold))
-        ma200_on.append(bool(spx.iloc[mpos] > ma200.iloc[mpos]) if not np.isnan(ma200.iloc[mpos]) else True)
+        ma200_on.append(regime_on)
 
     sectors = sorted({s for df in panels for s in df["sector"].unique() if str(s).lower() != "unknown"})
     return EdgePanel(panels, pd.DatetimeIndex(bdates), np.array(spxf), np.array(ndxf),
-                     np.array(ma200_on, bool), mret_full, sectors, hold)
+                     np.array(ma200_on, bool), mret_full, sectors, hold,
+                     live_panel=live_rows, live_date=live_date,
+                     live_regime_on=live_regime_on, live_spx_todate=live_spx_todate)
 
 
 # ---- ranking + selection ----------------------------------------------------
@@ -226,13 +267,22 @@ def score(df: pd.DataFrame, weights: dict | None = None) -> pd.Series:
     return comp
 
 
-def select_topN(df: pd.DataFrame, n: int = N, weights: dict | None = None) -> list:
-    d = df.dropna(subset=["fwd_ret"]).copy()
+def _scorable(df: pd.DataFrame, require_fwd: bool) -> pd.DataFrame:
+    """Rows we're allowed to pick from. The backtest requires a realized forward
+    return (a name we couldn't have measured must not enter a basket); the LIVE
+    book has no forward return by definition, so it opts out."""
+    return (df.dropna(subset=["fwd_ret"]) if require_fwd else df).copy()
+
+
+def select_topN(df: pd.DataFrame, n: int = N, weights: dict | None = None,
+                require_fwd: bool = True) -> list:
+    d = _scorable(df, require_fwd)
     d["_c"] = score(d, weights)
     return list(d.sort_values("_c", ascending=False).head(n)["company_key"])
 
 
-def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126):
+def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126,
+                    require_fwd=True):
     """Greedy basket: walk names best-first, admit a name only if its return
     correlation with every already-admitted name is <= cap.
 
@@ -240,7 +290,7 @@ def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126):
     correlation is judged on the `lookback` trading days ending at `asof`, never
     future data. (Omitting it falls back to the most-recent window, which is only
     valid for a live pick, not a historical backtest.)"""
-    d = df.dropna(subset=["fwd_ret"]).copy()
+    d = _scorable(df, require_fwd)
     d["_c"] = score(d, weights)
     order = list(d.sort_values("_c", ascending=False)["company_key"])
     M = D.daily_return_matrix()
@@ -356,15 +406,19 @@ EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
                                            # rides through (e.g. COVID-2020: -34% -> -26% at n=10).
 
 
-def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh):
+def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh,
+                  require_fwd=True):
     """Build the basket as K growth-gated picks + (n-K) pure-signal picks, where
-    K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth."""
+    K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth.
+
+    `require_fwd=False` picks from rows with no realized forward return -- only
+    valid for the LIVE book (the still-open position), never for the backtest."""
     def pick(frame, k):
         if k <= 0 or len(frame) < 1:
             return []
         return (corr_cap_select(frame, asof=asof, n=k, weights=weights, cap=corr_cap,
-                                lookback=corr_lookback) if corr_cap
-                else select_topN(frame, n=k, weights=weights))
+                                lookback=corr_lookback, require_fwd=require_fwd) if corr_cap
+                else select_topN(frame, n=k, weights=weights, require_fwd=require_fwd))
     K = int(round(growth_mix * n))
     gpick = []
     if K > 0:

@@ -4,8 +4,8 @@
     {
       "name": "quant-web",
       "runtimeExecutable": ".venv-mac/bin/python",
-      "runtimeArgs": ["app.py"],
-      "port": 5000,
+      "runtimeArgs": ["app.py", "--port", "5001"],
+      "port": 5001,
       "autoPort": true
     },
     {

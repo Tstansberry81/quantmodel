@@ -7,6 +7,7 @@ lives in edge_lib.
 Run:  python app.py     ->  http://127.0.0.1:5000
 """
 from __future__ import annotations
+import argparse
 import os
 import time
 from collections import defaultdict
@@ -333,5 +334,9 @@ def api_chat():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False)
+    # macOS squats :5000 with the AirPlay Receiver, so the port is worth being
+    # able to set without touching the environment.
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
+    args = ap.parse_args()
+    app.run(host="127.0.0.1", port=args.port, debug=True, use_reloader=False)

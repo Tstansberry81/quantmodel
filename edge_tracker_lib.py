@@ -216,69 +216,104 @@ def _latest_price(data, ck):
 
 
 def _current_book(pan, data, n, mix):
-    """The latest rebalance's full-spec picks = the live portfolio.
+    """The STILL-OPEN position: the most recent scheduled rebalance's full-spec
+    picks = what a live trader following the Edge is holding right now.
 
-    Equal-weight (1/n) book honoring the growth mix (K=round(mix*n) names from the
-    >=GROWTH_THRESH revenue-growth pool, rest pure acceleration); we also surface
-    the raw acceleration signal so the reader can see the conviction ordering."""
-    i = pan.T - 1
-    df = pan.panels[i]
+    Uses the panel's live rebalance (no realized forward return yet) when the
+    data supports one; that is a full hold period fresher than the last
+    backtest rebalance, which by construction must be old enough to have
+    finished. Equal-weight (1/n) honoring the growth mix (K=round(mix*n) names
+    from the >=GROWTH_THRESH revenue-growth pool, rest pure acceleration); we
+    also surface the raw acceleration signal so the reader can see the
+    conviction ordering, and the mark-to-market return since the open."""
+    live = pan.live_panel is not None and len(pan.live_panel) > 0
+    df = pan.live_panel if live else pan.panels[pan.T - 1]
+    bdate = pan.live_date if live else pan.bdates[pan.T - 1]
     floored = df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df
-    cks = E._blend_select(floored, pan.bdates[i], n, SIGNAL, CORR_CAP,
-                          CORR_LOOKBACK, mix, GROWTH_THRESH)
+    cks = E._blend_select(floored, bdate, n, SIGNAL, CORR_CAP,
+                          CORR_LOOKBACK, mix, GROWTH_THRESH, require_fwd=not live)
     w = 1.0 / len(cks) if cks else 0.0
-    accel = df.set_index("company_key")["accel"]
+    idx = df.set_index("company_key")
+    accel = idx["accel"]
+    todate = idx["fwd_todate"] if "fwd_todate" in idx.columns else None
     book = []
     for ck in cks:
         tk, nm, sec = _meta(data, ck)
+        r = float(todate.get(ck, float("nan"))) if todate is not None else float("nan")
         book.append({
             "ticker": tk, "name": nm, "sector": sec, "weight": w,
             "accel": float(accel.get(ck, float("nan"))),
             "price": _latest_price(data, ck),
+            "ret_todate": (r if r == r else None),      # NaN -> None
         })
     # show highest-conviction (accel) first
     book.sort(key=lambda r: (r["accel"] if r["accel"] == r["accel"] else -1e9),
               reverse=True)
-    return book, str(pan.bdates[i].date())
+    return book, str(pd.Timestamp(bdate).date()), cks, live
 
 
-def _paper_log(pan, data, hold, n, mix):
-    """Seed the FULL log from backtest history: every rebalance is a closed paper
-    trade with its realized NET Edge return vs the S&P (the most recent rebalance
-    is the still-OPEN trade). Each entry also carries the actual basket held that
-    rebalance (ticker + each name's own forward return). Returns the full list,
-    newest last; the caller slices it to the requested window."""
+def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
+    """Seed the FULL log from backtest history: every backtest rebalance is a
+    CLOSED paper trade with its realized NET Edge return vs the S&P. Each entry
+    carries the actual basket held that rebalance (ticker + each name's own
+    forward return).
+
+    Every rebalance in the backtest panel has a *completed* hold window -- that
+    is the panel's construction rule -- so none of them is still open. The open
+    trade is the panel's live rebalance, appended last and marked to market at
+    the latest close. Returns the full list, newest last; the caller slices it
+    to the requested window."""
     bdates, gross, net, turn, spxf, ndxf, holds = E._edge_full(
         hold, n, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
         tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH)
     T = len(net)
     log = []
-    for i in range(T):
-        opened = bdates[i]
+
+    def _holdings(cks, ret_by_ck):
+        out = []
+        for ck in cks:
+            tk, nm, _sec = _meta(data, ck)
+            r = float(ret_by_ck.get(ck, float("nan")))
+            out.append({"ticker": tk, "name": nm,
+                        "ret": (r if r == r else None)})        # NaN -> None
+        # best performer first; names with no return sort last
+        out.sort(key=lambda h: (h["ret"] if h["ret"] is not None else -1e9), reverse=True)
+        return out
+
+    def _closes(opened):
         # close date ~ hold trading days later (approx via 7/5 calendar scaling)
-        closes = opened + np.timedelta64(int(round(hold * 7 / 5)), "D")
+        return str(np.datetime64(opened + np.timedelta64(int(round(hold * 7 / 5)), "D"), "D"))
+
+    for i in range(T):
         edge_ret = float(net[i])
         sp_ret = float(spxf[i]) if spxf[i] == spxf[i] else 0.0
-        status = "OPEN" if i == T - 1 else "CLOSED"
-        # the basket held this rebalance + each name's own forward return
-        fwd = pan.panels[i].set_index("company_key")["fwd_ret"]
-        holdings = []
-        for ck in holds[i]:
-            tk, nm, _sec = _meta(data, ck)
-            r = float(fwd.get(ck, float("nan")))
-            holdings.append({"ticker": tk, "name": nm,
-                             "ret": (r if r == r else None)})   # NaN -> None
-        # best performer first; names with no return sort last
-        holdings.sort(key=lambda h: (h["ret"] if h["ret"] is not None else -1e9),
-                      reverse=True)
         log.append({
-            "opened": str(opened.date()),
-            "closes": str(np.datetime64(closes, "D")),
-            "status": status,
+            "opened": str(bdates[i].date()),
+            "closes": _closes(bdates[i]),
+            "status": "CLOSED",
             "edge_ret": edge_ret,
             "sp_ret": sp_ret,
             "excess": edge_ret - sp_ret,
-            "holdings": holdings,
+            "holdings": _holdings(holds[i], pan.panels[i].set_index("company_key")["fwd_ret"]),
+        })
+
+    if live_book and pan.live_date is not None and "fwd_todate" in pan.live_panel.columns:
+        # The open trade: equal-weight mark-to-market since the rebalance, gross
+        # of costs and before the regime overlay (nothing has settled yet).
+        td = pan.live_panel.set_index("company_key")["fwd_todate"]
+        rets = [float(td.get(ck, float("nan"))) for ck in live_cks]
+        rets = [r for r in rets if r == r]
+        edge_ret = float(np.mean(rets)) if rets else 0.0
+        sp_ret = float(pan.live_spx_todate) if pan.live_spx_todate == pan.live_spx_todate else 0.0
+        log.append({
+            "opened": str(pd.Timestamp(pan.live_date).date()),
+            "closes": _closes(np.datetime64(pd.Timestamp(pan.live_date), "ns")),
+            "status": "OPEN",
+            "edge_ret": edge_ret,
+            "sp_ret": sp_ret,
+            "excess": edge_ret - sp_ret,
+            "mark_to_market": True,       # partial: the hold window hasn't finished
+            "holdings": _holdings(live_cks, td),
         })
     return log
 
@@ -331,13 +366,17 @@ def _persist_snapshots(pan, data, mix):
     time each (config, book_date) pair is seen, so both accrue genuinely forward
     over real calendar time. Returns the full snapshot list (newest last)."""
     snaps = _read_snapshots()
-    i = pan.T - 1
-    book_date = str(pan.bdates[i].date())
+    # Key the record on the LIVE rebalance (the position actually open now), not
+    # the last backtest rebalance -- the backtest grid necessarily lags a full
+    # hold period, and snapshotting that date would freeze the forward record
+    # one rebalance behind reality.
+    book_date = str(pd.Timestamp(pan.live_date if pan.live_date is not None
+                                 else pan.bdates[pan.T - 1]).date())
     changed = False
     for cfg, nn in (("product", N), (f"paper-n{PAPER_N}", PAPER_N)):
         if any(_snap_config(s) == cfg and s.get("book_date") == book_date for s in snaps):
             continue
-        book, _bd = _current_book(pan, data, nn, mix)
+        book, _bd, _cks, _live = _current_book(pan, data, nn, mix)
         snaps.append({
             "config": cfg,
             "n": nn,
@@ -414,8 +453,8 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             mix = GROWTH_MIX
         pan = E.load_edge_panel(hold=hold)
         data = engine.load_bt_data()
-        current_book, book_date = _current_book(pan, data, n, mix)
-        full_log = _paper_log(pan, data, hold, n, mix)
+        current_book, book_date, live_cks, live = _current_book(pan, data, n, mix)
+        full_log = _paper_log(pan, data, hold, n, mix, live, live_cks)
 
         # trim to the requested window (same math as the backtest: ppy = 252/hold)
         k = _window_k(len(full_log), pan.ppy, window)
@@ -443,6 +482,10 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             "first_snapshot": vsnaps[0]["book_date"] if vsnaps else book_date,
             "window": window,
             "n_total": len(full_log),
+            # the open position is live, not a finished trade
+            "book_is_live": bool(live),
+            "book_regime_on": bool(pan.live_regime_on),
+            "book_exposure": 1.0 if pan.live_regime_on else REGIME_EXPO,
         }
         return {
             "ok": True,
