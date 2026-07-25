@@ -25,7 +25,7 @@ import edge_data as engine   # self-contained Edge data layer (was qmodel.engine
 # stays lazy behind lru_cache inside edge_lib.)
 import edge_lib
 import edge_tracker_lib
-import export_sauron        # imports edge_lib/edge_tracker_lib too — same reason
+import export_vision        # imports edge_lib/edge_tracker_lib too — same reason
 
 
 def _load_dotenv():
@@ -245,7 +245,7 @@ def api_sync_vision():
         mix = 0.75
     if mix not in _EDGE_MIXES:
         mix = 0.75
-    return _safe(lambda: export_sauron.export_to_vision(window=window, hold=hold, mix=mix))
+    return _safe(lambda: export_vision.export_to_vision(window=window, hold=hold, mix=mix))
 
 
 # ---- in-app chat assistant ("explain the numbers on screen") ----------------
