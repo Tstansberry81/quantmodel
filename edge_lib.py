@@ -31,6 +31,19 @@ import pit_universe as PIT           # pluggable PIT Russell-1000 universe layer
 _env = os.environ.get("EDGE_USE_PIT_UNIVERSE")
 USE_PIT_UNIVERSE = (_env == "1") if _env in ("0", "1") else PIT.is_real_pit()
 
+# Survivorship stress mode. By default a name whose price series ends inside
+# the forward hold window is EXCLUDED from that rebalance's panel -- the
+# backtest never holds a stock through its delisting, which flatters returns.
+# Set EDGE_DELIST_HAIRCUT (e.g. "-0.30") to instead INCLUDE such names with
+# fwd_ret truncated at their last trade and the haircut applied to the final
+# price (a proxy for the delisting/OTC fade the data can't see). 0.0 = truncate
+# only. This is a research/stress knob; leave unset for product behaviour.
+_dh = os.environ.get("EDGE_DELIST_HAIRCUT")
+try:
+    DELIST_HAIRCUT: float | None = float(_dh) if _dh not in (None, "") else None
+except ValueError:
+    DELIST_HAIRCUT = None
+
 HOLD = 21                            # ~30 calendar days (a 1-month trading clock)
 LB = 251                             # trailing window for signals / beta
 PPY = 252.0 / HOLD
@@ -116,6 +129,7 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
     rebal = list(monthly[:-hold][::hold])
     panels, bdates, spxf, ndxf, ma200_on = [], [], [], [], []
     use_pit = USE_PIT_UNIVERSE and PIT.is_real_pit()
+    spx_end = np.datetime64(pd.Timestamp(spx.index[-1]), "ns")   # sample end, for delist detection
 
     for d in rebal:
         dt = np.datetime64(pd.Timestamp(d), "ns"); dlag = dt - lag
@@ -131,12 +145,24 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
             if pit_set and ck not in pit_set:
                 continue
             pos = int(np.searchsorted(P["pidx"], dt, side="right")) - 1
-            if pos < LB or (len(P["arr"]) - 1 - pos) < hold + 1:  # +1: enter next day (t+1)
+            if pos < LB:
                 continue
+            n_fwd = len(P["arr"]) - 1 - pos
+            full_fwd = n_fwd >= hold + 1          # +1: enter next day (t+1)
+            if not full_fwd:
+                # Series ends inside the hold window. Normally skip (the stock
+                # is unbuyable-through-death in this data); under the delist
+                # stress knob include it as a truncated position -- but only if
+                # the series truly dies before the sample does (otherwise it's
+                # just the end of the data, not a delisting), and only if there
+                # is still a t+1 bar to enter on.
+                died = P["pidx"][-1] < spx_end - np.timedelta64(7, "D")
+                if DELIST_HAIRCUT is None or not died or n_fwd < 1:
+                    continue
             mc = asof(P["fidx"], P["mcap"], dlag)
             if mc is None or np.isnan(mc):
                 continue
-            cand.append((mc, ck, pos))
+            cand.append((mc, ck, pos, full_fwd))
         if len(cand) < 50:
             continue
         cand.sort(key=lambda x: x[0], reverse=True)
@@ -145,7 +171,7 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
         if not pit_set:
             cand = cand[:universe]
         rows = []
-        for mc, ck, pos in cand:
+        for mc, ck, pos, full_fwd in cand:
             P = prep[ck]; arr = P["arr"]; w = P["rets"][pos - LB + 1: pos + 1]
             wm = P["mret"][pos - LB + 1: pos + 1]
             sd = w.std(ddof=1)
@@ -166,8 +192,11 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                 # EXECUTION LAG: signal is formed on close t but the trade enters at
                 # close t+1 (you can't compute the whole cross-section AND trade the
                 # close it was computed from). Validated benign-to-favorable, so the
-                # tradeable next-day entry is the honest default.
-                "fwd_ret": arr[pos + 1 + hold] / arr[pos + 1] - 1,
+                # tradeable next-day entry is the honest default. Under the delist
+                # stress knob a dying name is instead truncated at its last trade,
+                # with the haircut applied -- same t+1 entry.
+                "fwd_ret": (arr[pos + 1 + hold] / arr[pos + 1] - 1) if full_fwd
+                           else (arr[-1] * (1.0 + DELIST_HAIRCUT)) / arr[pos + 1] - 1,
             })
         panels.append(pd.DataFrame(rows)); bdates.append(pd.Timestamp(d))
         # benchmark forward return over the FULL hold-day window (hold-aware!)

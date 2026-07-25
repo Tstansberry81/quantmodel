@@ -51,7 +51,13 @@ import config
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(config.__file__).resolve().parent / "data"
 CACHE_DIR = DATA_DIR / "cache"
-MEMBERSHIP_CSV = DATA_DIR / "russell1000_membership.csv"
+# Default path auto-activates the CSV adapter (and thus the PIT universe) when
+# present -- reserve it for REAL Russell-1000 membership. Research runs against
+# other membership files (e.g. data/sp500_membership.csv, fetched by
+# fetch_membership.py) should point PIT_MEMBERSHIP_CSV at them explicitly so
+# the product's proxy behaviour never flips silently.
+MEMBERSHIP_CSV = Path(os.environ.get("PIT_MEMBERSHIP_CSV",
+                                     DATA_DIR / "russell1000_membership.csv"))
 DELISTED_RETURNS = DATA_DIR / "delisted_returns.parquet"   # or .csv
 DELISTED_RETURNS_CSV = DATA_DIR / "delisted_returns.csv"
 MEMBERSHIP_ARTIFACT = CACHE_DIR / "pit_membership.json"     # cached built artifact
