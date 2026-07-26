@@ -226,7 +226,7 @@ def api_sync_vision():
     (falls back to a local write with no GITHUB_TOKEN)."""
     body = request.get_json(silent=True) or {}
     window = (body.get("window", "2Y") or "2Y").upper()
-    if window not in _EDGE_WINDOWS:
+    if window not in _edge_windows():
         window = "2Y"
     try:
         hold = int(body.get("hold", 21))

@@ -80,7 +80,7 @@ def run_variant(label: str, universe: int = 1000, use_pit: bool = False,
                 haircut: float | None = None):
     E.USE_PIT_UNIVERSE = use_pit
     E.DELIST_HAIRCUT = haircut
-    E.load_edge_panel.cache_clear()
+    E.reset_caches()          # globals are not in any cache key -- clear ALL of them
     pan = E.load_edge_panel(hold=HOLD, universe=universe)
     net = _walk(pan)
     T = len(net)

@@ -1,15 +1,22 @@
-"""Signal-quality report for the Edge: IC + decile spread, per universe.
+"""Is the accel signal an artifact of the UNIVERSE? IC + tail, proxy vs true-PIT.
+
+NOT to be confused with edge_signal_ic.py, which hunts for NEW signals by
+ranking many candidates on one universe. This asks the opposite question about
+the ONE signal we already trade: how much of its edge survives when the
+survivorship-biased top-1000 proxy is swapped for true point-in-time S&P 500
+membership? Same signal, two universes.
 
 Survivorship bias inflates LEVELS (CAGR) but largely cancels out of
 CROSS-SECTIONAL rank measures -- every name in a rebalance panel shares the
-same universe construction, so Spearman(signal, forward return) and the
-top-minus-bottom decile spread are the most bias-robust evidence the signal
-is real. (This is the same argument the Slow Burn README makes for IC/deciles;
-the Edge never had the report.)
+same universe construction -- so rank statistics are the more bias-robust
+evidence. The catch, and the reason the top-N tail is reported too: the Edge
+does not trade the ranking, it trades the extreme top of it, so a ~0 broad IC
+is compatible with a real edge (and vice versa).
 
 Prints, for the proxy top-1000 and the true-PIT S&P 500 universes:
-  * mean monthly IC, its t-stat, and %positive months
-  * average decile-10 minus decile-1 forward return (per rebalance)
+  * mean rank-IC, its t-stat, and %positive rebalances
+  * decile-10 minus decile-1 forward return per rebalance
+  * top-N (the traded book) minus universe-mean forward return, with t-stat
 
 Run:  .venv-mac/bin/python edge_ic.py
 """
@@ -34,7 +41,7 @@ SIGNAL = {"accel": 1.0}
 def ic_report(label: str, use_pit: bool):
     E.USE_PIT_UNIVERSE = use_pit
     E.DELIST_HAIRCUT = None
-    E.load_edge_panel.cache_clear()
+    E.reset_caches()          # globals are not in any cache key -- clear ALL of them
     pan = E.load_edge_panel(hold=HOLD)
     ics, spreads, tails = [], [], []
     for df in pan.panels:

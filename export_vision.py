@@ -34,8 +34,12 @@ LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the pr
 
 _REBAL_LABEL = {21: "1M", 42: "2M", 63: "3M", 126: "6M"}
 
-# fail loud at import time if either window label drifts from the model's list
-assert WINDOW in edge_lib.WINDOWS and LONG_WINDOW in edge_lib.WINDOWS
+# Fail loud at import time if either window label drifts from the model's list.
+# A raise, not an assert: asserts are stripped under `python -O`, which would
+# silently disable exactly the guard we want most on a production host.
+for _w in (WINDOW, LONG_WINDOW):
+    if _w not in edge_lib.WINDOWS:
+        raise ValueError(f"export window {_w!r} is not in edge_lib.WINDOWS {edge_lib.WINDOWS}")
 
 
 def build(window: str = WINDOW, hold: int = HOLD, mix: float = MIX) -> dict:

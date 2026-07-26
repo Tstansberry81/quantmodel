@@ -597,6 +597,19 @@ def _sortino_daily(r):
     return float(np.sqrt(252) * np.mean(r) / d) if d > 0 else 0.0
 
 
+def reset_caches() -> None:
+    """Drop every memoized result that depends on the panel.
+
+    REQUIRED after mutating the module-level research knobs USE_PIT_UNIVERSE or
+    DELIST_HAIRCUT: neither is part of any cache key, so a surviving entry
+    silently returns the PREVIOUS variant's numbers -- a wrong research result
+    with no error. Clearing load_edge_panel alone is not enough; the selection
+    and daily-series caches sit above it and would still be warm.
+    (_ma200_daily_state is not cleared: it depends only on the S&P calendar.)"""
+    for fn in (load_edge_panel, _select_holds_cached, _edge_full, _edge_daily):
+        fn.cache_clear()
+
+
 def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     """Backtest the tradeable Edge over a trailing window. Returns curves +
     performance in the same shape the website's chart code expects (NET of costs)."""
