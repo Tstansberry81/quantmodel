@@ -52,7 +52,7 @@ N = 10                               # basket size (agents may vary)
 UNIVERSE = 1000                      # Russell-1000 proxy: top-N by point-in-time mcap
 
 # short-horizon signal columns the trading model ranks on (market data only)
-SIGNAL_COLS = ["ret_21", "ret_63", "ret_126", "accel", "hi_252", "rs_63"]
+SIGNAL_COLS = ["ret_21", "ret_63", "ret_126", "ret_12_1", "accel", "hi_252", "rs_63"]
 
 # The single source of truth for backtest/tracker window labels. app.py,
 # edge_tracker_lib, export_vision, and the templates' window buttons must all
@@ -211,6 +211,11 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                 "ret_21": arr[pos] / arr[pos - 21] - 1,
                 "ret_63": ret_63,
                 "ret_126": arr[pos] / arr[pos - 126] - 1,
+                # 12-1 momentum (Jegadeesh-Titman): the canonical formulation --
+                # 12-month return SKIPPING the most recent month, because that
+                # last month carries short-term reversal that works against it.
+                # pos >= LB (251) so pos-251 is always in bounds.
+                "ret_12_1": arr[pos - 21] / arr[pos - 251] - 1,
                 "accel": ret_63 - (arr[pos - 63] / arr[pos - 126] - 1),
                 "hi_252": arr[pos] / arr[pos - 251: pos + 1].max(),
                 "rs_63": ret_63 - m63,                  # relative strength vs market
