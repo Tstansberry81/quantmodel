@@ -73,9 +73,9 @@ LINE_ITEMS = {
 
 
 def _key() -> str:
-    for line in Path(config.ROOT, ".env").read_text(encoding="utf-8").splitlines():
-        if line.startswith("FISCAL_API_KEY="):
-            return line.split("=", 1)[1].strip()
+    # importing config loads .env, so the key is already in the environment --
+    # and unlike reading .env directly, this doesn't crash on a host that has
+    # no .env file (Render sets real environment variables).
     return config.FISCAL_API_KEY
 
 

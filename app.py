@@ -29,20 +29,7 @@ import edge_tracker_lib
 import export_vision        # imports edge_lib/edge_tracker_lib too — same reason
 
 
-def _load_dotenv():
-    """Load KEY=VALUE pairs from a local .env (gitignored) into the environment.
-    Used for ANTHROPIC_API_KEY in local dev; on Render set it as a real env var."""
-    p = os.path.join(os.path.dirname(__file__), ".env")
-    if not os.path.exists(p):
-        return
-    for line in open(p, encoding="utf-8"):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
-
-
-_load_dotenv()
+import config   # noqa: E402  -- importing config loads .env for every entrypoint
 
 app = Flask(__name__)
 app.json.sort_keys = False

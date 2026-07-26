@@ -11,6 +11,28 @@ from pathlib import Path
 # Paths
 # ----------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent
+
+
+# ----------------------------------------------------------------------------
+# Local secrets
+# ----------------------------------------------------------------------------
+def load_dotenv() -> None:
+    """Load KEY=VALUE pairs from the local .env (gitignored) into the process
+    environment. Lives HERE rather than in app.py because every entrypoint --
+    the site, build_data.py, and the research scripts -- imports config, so a
+    key dropped in .env now works everywhere instead of only in the web app.
+    Real environment variables always win (Render sets them for real)."""
+    p = ROOT / ".env"
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+load_dotenv()
 DATA_DIR = ROOT / "data"
 CACHE_DIR = DATA_DIR / "cache"
 ARTIFACT_DIR = DATA_DIR / "artifacts"
