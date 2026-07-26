@@ -304,6 +304,69 @@ class CSVAdapter(BaseAdapter):
         return d
 
 
+class SharadarAdapter(BaseAdapter):
+    """Real PIT membership derived from Sharadar's listing/delisting dates.
+
+    Sharadar's SEP universe carries 15,634 delisted tickers with prices through
+    their death date, so "which names were actually listed and investable on
+    date d" is answerable directly: a name is a member of the investable
+    universe on d iff firstpricedate <= d <= lastpricedate.
+
+    That is a LISTING universe, not an index universe -- it does not claim to
+    be the Russell 1000. The Edge's own $2B floor + top-N-by-PIT-mcap cut is
+    what narrows it to a large-cap book; this adapter's job is only to stop the
+    universe from being silently restricted to survivors. Requires the artifact
+    built by sharadar_ingest.py (meta.json source == "sharadar").
+    """
+    name = "sharadar"
+    is_real = True
+
+    def __init__(self):
+        self._spans = None
+
+    def _load(self):
+        """{company_key: (first_date, last_date)} from the built artifact."""
+        if self._spans is not None:
+            return self._spans
+        import json
+
+        import edge_data as engine
+        src = ""
+        try:
+            src = str(json.loads((CACHE_DIR.parent / "artifacts" / "meta.json")
+                                 .read_text(encoding="utf-8")).get("source", ""))
+        except Exception:
+            pass
+        if src != "sharadar":
+            self._spans = {}
+            return self._spans
+        spans = {}
+        for ck, blob in engine.load_bt_data().items():
+            pr = blob.get("prices")
+            if pr is not None and len(pr):
+                spans[ck] = (pr.index[0], pr.index[-1])
+        self._spans = spans
+        return spans
+
+    def available(self) -> bool:
+        try:
+            return bool(self._load())
+        except Exception:
+            return False
+
+    def members(self, asof: pd.Timestamp) -> set:
+        asof = pd.Timestamp(asof)
+        return {ck for ck, (a, b) in self._load().items() if a <= asof <= b}
+
+    def diagnostics(self) -> dict:
+        d = super().diagnostics()
+        try:
+            d["n_names"] = len(self._load())
+        except Exception:
+            pass
+        return d
+
+
 class ProxyAdapter(BaseAdapter):
     """Fallback: NOT real PIT. Returns an empty set so the Edge knows to use its
     existing top-1000-by-PIT-mcap logic. Exists only so the chain always resolves
@@ -323,11 +386,12 @@ class ProxyAdapter(BaseAdapter):
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=1)
 def active_adapter() -> BaseAdapter:
-    """Pick the first available adapter in priority order (Norgate > CSV > proxy),
-    honouring PIT_FORCE_ADAPTER if set."""
-    candidates = [NorgateAdapter(), CSVAdapter(), ProxyAdapter()]
+    """Pick the first available adapter in priority order
+    (Norgate > Sharadar > CSV > proxy), honouring PIT_FORCE_ADAPTER if set."""
+    candidates = [NorgateAdapter(), SharadarAdapter(), CSVAdapter(), ProxyAdapter()]
     if FORCE_ADAPTER:
-        wanted = {"NORGATE": "norgate", "CSV": "csv", "PROXY": "proxy"}.get(FORCE_ADAPTER)
+        wanted = {"NORGATE": "norgate", "SHARADAR": "sharadar",
+                  "CSV": "csv", "PROXY": "proxy"}.get(FORCE_ADAPTER)
         candidates = [c for c in candidates if c.name == wanted] or [ProxyAdapter()]
     for c in candidates:
         try:

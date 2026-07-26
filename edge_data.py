@@ -13,6 +13,7 @@ so the qmodel package and the tech-bias research modules can be removed.
 """
 from __future__ import annotations
 import json
+import os
 import pickle
 import time
 from functools import lru_cache
@@ -28,10 +29,17 @@ LB = 251                                  # min price history to include a name
 
 
 # ---- artifacts --------------------------------------------------------------
+# Which artifact file to read. Lets a research run point at a DIFFERENT vendor's
+# panel (e.g. backtest_data.fiscal.pkl) without moving files around, so a
+# same-model / different-data A/B is repeatable and can't leave the production
+# artifact swapped out if it's interrupted. Unset = the live artifact.
+ARTIFACT_FILE = os.environ.get("EDGE_ARTIFACT", "backtest_data.pkl")
+
+
 @lru_cache(maxsize=1)
 def load_bt_data() -> dict:
     """Per-name {prices, fund_hist, meta} from the backtest artifact pickle."""
-    p = config.ARTIFACT_DIR / "backtest_data.pkl"
+    p = config.ARTIFACT_DIR / ARTIFACT_FILE
     if not p.exists():
         return {}
     with open(p, "rb") as f:

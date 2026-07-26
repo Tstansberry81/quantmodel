@@ -1,0 +1,271 @@
+"""Pull the Sharadar bulk tables and build the Edge's backtest artifact.
+
+WHY THIS EXISTS
+---------------
+The fiscal.ai artifact carries 1,111 names of which 111 are delisted -- and every
+one of those died in 2024 or later. There is effectively NO delisted history
+before 2024, so the backtest never holds a stock through its death and the
+survivorship question could only be bounded, never answered. Sharadar's SEP
+covers 21,946 tickers of which 15,634 are delisted, with prices back to 1998.
+
+This module downloads the bulk exports once and rebuilds
+`data/artifacts/backtest_data.pkl` in EXACTLY the shape edge_data.load_bt_data()
+already returns:
+
+    {company_key: {"prices": Series, "fund_hist": DataFrame, "meta": {...}}}
+
+so edge_lib, the tracker, the export and every research script keep working
+untouched -- and fiscal.ai vs Sharadar becomes a clean A/B on data quality alone.
+
+POINT-IN-TIME DISCIPLINE (see sharadar_kit/CLAUDE.md)
+  * SF1 dimension ART only (as-reported TTM). MR* are restated -> look-ahead.
+  * Fundamentals are indexed by `datekey` (SEC filing date) + a filing-lag
+    censor, never by `calendardate` (period end, unobservable until filed).
+  * Prices are `closeadj` (split- AND dividend-adjusted) for total return.
+  * Delisted tickers are kept. Dead names are re-symboled at bankruptcy
+    (LEH -> LEHMQ, Bear Stearns -> BSC1), so identity is `permaticker`.
+
+Run:
+    .venv-mac/bin/python sharadar_ingest.py download     # ~1.7GB, once
+    .venv-mac/bin/python sharadar_ingest.py build        # -> artifacts
+    .venv-mac/bin/python sharadar_ingest.py all
+"""
+from __future__ import annotations
+
+import io
+import pickle
+import sys
+import time
+import zipfile
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+import config                      # importing config loads .env
+import sharadar_client as S
+
+RAW = config.DATA_DIR / "sharadar"
+RAW.mkdir(parents=True, exist_ok=True)
+
+# Bulk tables we need. SFP (benchmarks) is pulled per-ticker via the API
+# instead -- we only want a handful of ETFs, not the whole 300MB fund table.
+BULK_TABLES = ("TICKERS", "SF1", "SEP")
+
+# The filing-lag censor, in trading days, applied on top of `datekey`.
+# The kit's house rule is >= 1; do not lower it.
+FILING_LAG_DAYS = 1
+
+# Columns we keep from SF1/ART. `marketcap` drives the point-in-time universe
+# ranking; `revenueusd` drives the growth mix.
+SF1_COLS = ["ticker", "datekey", "calendardate", "marketcap", "revenueusd"]
+
+# Price-history cutoff: keep any name that EVER reached this market cap. Set
+# well below the product's $2B liquidity floor so no selectable name is lost,
+# while keeping the SEP scan tractable.
+MCAP_KEEP = 1e9
+
+
+# ---------------------------------------------------------------------------
+# download
+# ---------------------------------------------------------------------------
+def _export_link(sc: S.SharadarClient, table: str) -> str:
+    """Ask for the bulk export and return the S3 link once it's fresh."""
+    url = f"{S.BASE_URL}/SHARADAR/{table}.csv"
+    for attempt in range(30):
+        r = sc._session.get(url, params={"api_key": sc.api_key,
+                                         "qopts.export": "true"}, timeout=90)
+        if r.status_code != 200:
+            raise S.SharadarError(f"{table} export failed {r.status_code}: {r.text[:200]}")
+        last = r.text.strip().splitlines()[-1]
+        parts = last.split(",")
+        link, status = parts[0], (parts[1] if len(parts) > 1 else "")
+        if link.startswith("http") and status.strip() == "fresh":
+            return link
+        print(f"  {table}: export {status or 'regenerating'} — waiting…", flush=True)
+        time.sleep(10)
+    raise S.SharadarError(f"{table}: export never became fresh")
+
+
+def download(tables=BULK_TABLES, force: bool = False) -> None:
+    sc = S.SharadarClient()
+    for t in tables:
+        out = RAW / f"{t}.zip"
+        if out.exists() and not force:
+            print(f"[skip] {t}: already have {out.name} ({out.stat().st_size/1e6:.0f} MB)")
+            continue
+        link = _export_link(sc, t)
+        print(f"[get ] {t} …", flush=True)
+        with sc._session.get(link, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length", 0))
+            done = 0
+            tmp = out.with_suffix(".part")
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 22):     # 4MB
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        print(f"\r       {done/1e6:6.0f}/{total/1e6:.0f} MB", end="", flush=True)
+            print()
+            tmp.rename(out)      # atomic: a partial download never looks complete
+        print(f"[ok  ] {t}: {out.stat().st_size/1e6:.0f} MB")
+
+
+def _read_zip_csv(table: str, usecols=None, dtype=None) -> pd.DataFrame:
+    """Read the single CSV inside a bulk-export zip."""
+    zp = RAW / f"{table}.zip"
+    if not zp.exists():
+        raise FileNotFoundError(f"{zp} missing — run `sharadar_ingest.py download` first")
+    with zipfile.ZipFile(zp) as z:
+        name = z.namelist()[0]
+        with z.open(name) as fh:
+            return pd.read_csv(fh, usecols=usecols, dtype=dtype, low_memory=False)
+
+
+def _read_zip_csv_chunked(table: str, usecols, keep_tickers: set,
+                          chunksize: int = 2_000_000):
+    """Stream a bulk CSV, keeping only rows for `keep_tickers`.
+
+    SEP is ~55M rows; materialising it whole (the ticker column alone is GBs as
+    Python objects) would exhaust memory on a laptop. Filtering per chunk keeps
+    peak usage to one chunk plus the surviving rows."""
+    zp = RAW / f"{table}.zip"
+    if not zp.exists():
+        raise FileNotFoundError(f"{zp} missing — run `sharadar_ingest.py download` first")
+    frames, seen = [], 0
+    with zipfile.ZipFile(zp) as z:
+        with z.open(z.namelist()[0]) as fh:
+            for chunk in pd.read_csv(fh, usecols=usecols, chunksize=chunksize,
+                                     low_memory=False):
+                seen += len(chunk)
+                frames.append(chunk[chunk["ticker"].isin(keep_tickers)])
+                print(f"\r      scanned {seen/1e6:.1f}M rows", end="", flush=True)
+    print()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# build
+# ---------------------------------------------------------------------------
+def _company_key(row) -> str:
+    """Mirror the fiscal.ai key format 'EXCHANGE_TICKER' so existing caches,
+    the PIT layer and the tracker's snapshot history all still line up."""
+    ex = str(row.get("exchange") or "NA").upper().replace(" ", "")
+    return f"{ex}_{row['ticker']}"
+
+
+def build(min_history: int = 260) -> dict:
+    """Assemble the artifact dict + write it to data/artifacts/."""
+    print("[1/4] tickers …", flush=True)
+    meta = _read_zip_csv("TICKERS")
+    meta = meta[meta["table"] == "SEP"].copy()          # equities only
+    for c in ("firstpricedate", "lastpricedate"):
+        if c in meta.columns:
+            meta[c] = pd.to_datetime(meta[c], errors="coerce")
+    meta = meta.drop_duplicates("ticker", keep="last")
+    print(f"      {len(meta):,} equity tickers "
+          f"({(meta['isdelisted'] == 'Y').sum():,} delisted)")
+
+    print("[2/4] fundamentals (SF1/ART) …", flush=True)
+    # usecols at read time: the full SF1 is ~100 columns x millions of rows.
+    sf1 = _read_zip_csv("SF1", usecols=SF1_COLS + ["dimension"])
+    sf1 = sf1[sf1["dimension"] == "ART"]                # as-reported TTM ONLY
+    keep = [c for c in SF1_COLS if c in sf1.columns]
+    sf1 = sf1[keep].copy()
+    sf1["datekey"] = pd.to_datetime(sf1["datekey"], errors="coerce")
+    sf1 = sf1.dropna(subset=["datekey"]).sort_values(["ticker", "datekey"])
+    # Availability date = filing date + the lag censor. Indexing fund_hist by
+    # THIS date is what makes the panel point-in-time: a lookup as-of date d
+    # can only ever see filings that were already public on d.
+    sf1["available"] = sf1["datekey"] + pd.tseries.offsets.BDay(FILING_LAG_DAYS)
+    # YoY revenue growth off the TTM series (the growth-mix input), computed
+    # per ticker from filings ~4 quarters apart.
+    sf1["growth_revenue_1y"] = (sf1.groupby("ticker")["revenueusd"]
+                                   .pct_change(periods=4))
+    print(f"      {len(sf1):,} ART filings, {sf1['ticker'].nunique():,} tickers")
+
+    print("[3/4] prices (SEP, closeadj) …", flush=True)
+    # Only names that could ever clear the model's liquidity floor are worth
+    # pricing: edge_lib drops any candidate with no market cap, and the product
+    # floor is $2B. Keep everything that EVER reached MCAP_KEEP (well below the
+    # floor, so nothing the model could pick is lost) -- this is what makes a
+    # 55M-row table tractable, and it discards only names the model would
+    # never have selected anyway.
+    eligible = set(sf1.loc[sf1["marketcap"] >= MCAP_KEEP, "ticker"].unique())
+    eligible &= set(meta["ticker"])
+    print(f"      {len(eligible):,} tickers ever >= ${MCAP_KEEP/1e9:.0f}B (of "
+          f"{sf1['ticker'].nunique():,} with fundamentals)")
+    sep = _read_zip_csv_chunked("SEP", ["ticker", "date", "closeadj"], eligible)
+    sep["date"] = pd.to_datetime(sep["date"], errors="coerce")
+    sep = sep.dropna(subset=["date", "closeadj"])
+    print(f"      {len(sep):,} price rows, {sep['ticker'].nunique():,} tickers")
+
+    print("[4/4] assembling artifact …", flush=True)
+    meta_by_ticker = meta.set_index("ticker")
+    fund_by_ticker = dict(tuple(sf1.groupby("ticker")))
+    out: dict = {}
+    n_short = 0
+    for tk, g in sep.groupby("ticker", sort=False):
+        if tk not in meta_by_ticker.index:
+            continue
+        if len(g) < min_history:                        # too short to signal on
+            n_short += 1
+            continue
+        m = meta_by_ticker.loc[tk]
+        prices = pd.Series(g["closeadj"].values, index=pd.DatetimeIndex(g["date"]),
+                           name="close").sort_index()
+        prices = prices[~prices.index.duplicated(keep="last")]
+
+        fh = fund_by_ticker.get(tk)
+        if fh is not None and len(fh):
+            fund_hist = pd.DataFrame(
+                {"calculated_market_cap": fh["marketcap"].values,
+                 "growth_revenue_1y": fh["growth_revenue_1y"].values},
+                index=pd.DatetimeIndex(fh["available"]),
+            ).sort_index()
+            fund_hist = fund_hist[~fund_hist.index.duplicated(keep="last")]
+        else:
+            fund_hist = pd.DataFrame(columns=["calculated_market_cap",
+                                              "growth_revenue_1y"],
+                                     index=pd.DatetimeIndex([]))
+
+        out[_company_key(m)] = {
+            "prices": prices,
+            "fund_hist": fund_hist,
+            "meta": {"ticker": tk,
+                     "name": str(m.get("name") or tk),
+                     "sector": str(m.get("sector") or "Unknown"),
+                     "trading_status": "Inactive" if m.get("isdelisted") == "Y" else "Active"},
+        }
+
+    n_dead = sum(1 for b in out.values() if b["meta"]["trading_status"] == "Inactive")
+    print(f"      {len(out):,} names kept ({n_dead:,} delisted, "
+          f"{n_dead/max(len(out),1)*100:.0f}%); {n_short:,} skipped for <{min_history} bars")
+
+    art = config.ARTIFACT_DIR
+    art.mkdir(parents=True, exist_ok=True)
+    with open(art / "backtest_data.pkl", "wb") as f:
+        pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
+    (art / "meta.json").write_text(
+        pd.Series({"built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "n_names": len(out), "universe_size": len(out),
+                   "source": "sharadar"}).to_json(), encoding="utf-8")
+    print(f"      wrote {art/'backtest_data.pkl'}")
+    return out
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else "all"
+    if cmd in ("download", "all"):
+        download()
+    if cmd in ("build", "all"):
+        build()
+    if cmd not in ("download", "build", "all"):
+        print(f"usage: {argv[0]} [download|build|all]")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
