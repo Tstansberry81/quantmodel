@@ -32,6 +32,31 @@ CORR_LOOKBACK = 126
 REGIME_EXPO = 0.25
 COST_BPS = 10.0
 SIGNAL = {"accel": 1.0}
+
+# --- STATUS OF THE SHIPPED SIGNAL -------------------------------------------
+# 2026-07-26: acceleration was falsified on survivorship-free Sharadar data
+# (21,946 tickers, 15,634 delisted, back to 1998). Three independent lenses:
+#   * cross-section  -- top-10 tail +0.27%/rebalance at t=0.4, positive in only
+#                       45% of rebalances: it does not rank the cross-section.
+#   * out-of-sample  -- 8.3% CAGR vs the S&P's 14.8% (-6.4%/yr), max drawdown
+#                       -52.8% vs -22.1%, over 2012-2026.
+#   * forward record -- the live paper book's last two closed rebalances lost.
+# The old +7%/yr excess came from a panel with 111 delisted names, ALL of which
+# died in 2024 or later -- i.e. the backtest could not hold a stock through its
+# death at any point before then. The tracker keeps accruing so the forward
+# record stays honest and unbroken, but the page must not present this as a
+# working product. Replacement is not chosen yet: momentum ranks better but has
+# not yet beaten the index on a RISK-ADJUSTED basis out of sample.
+MODEL_STATUS = {
+    "state": "falsified",
+    "since": "2026-07-26",
+    "headline": "Acceleration does not beat the market on survivorship-free data.",
+    "detail": ("Out of sample (2012-2026) this signal returned 8.3%/yr against "
+               "the S&P's 14.8%, with a -52.8% drawdown vs -22.1%. Its "
+               "cross-sectional edge is +0.27%/rebalance at t=0.4. The forward "
+               "record below continues to accrue as evidence; it is NOT a "
+               "recommendation."),
+}
 GROWTH_MIX = 0.75                   # default mirrors the product (EDGE_SPEC growth_mix)
 GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
 
@@ -500,6 +525,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
                 "cost_bps": COST_BPS, "signal": "acceleration (3m-prior3m)",
                 "growth_mix": mix, "growth_thresh": GROWTH_THRESH,
             },
+            "model_status": MODEL_STATUS,
         }
     except Exception as e:  # surface a clean error to the page
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}

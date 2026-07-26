@@ -59,19 +59,23 @@ def tail_t(pan, col, sign, lo, hi):
     return float(a.mean()), t
 
 
-def portfolio(pan, signal: dict, lo: int, hi: int):
+def portfolio(pan, signal: dict, lo: int, hi: int, *, sector_neutral=False,
+              beta_neutral=False, corr_mode="max", cap=CORR_CAP, weight="equal"):
     """Net per-rebalance returns for the full spec over [lo, hi)."""
     holds, turn, prev = [], [], None
     for i in range(lo, hi):
         d = pan.panels[i][pan.panels[i]["pit_mcap"] >= MCAP_FLOOR]
-        cks = E._blend_select(d, pan.bdates[i], TOP_N, signal, CORR_CAP,
-                              CORR_LOOKBACK, GROWTH_MIX, GROWTH_THRESH)
+        cks = E._blend_select(d, pan.bdates[i], TOP_N, signal, cap,
+                              CORR_LOOKBACK, GROWTH_MIX, GROWTH_THRESH,
+                              corr_mode=corr_mode, sector_neutral=sector_neutral,
+                              beta_neutral=beta_neutral)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur
         holds.append(cks)
     # period_returns walks the whole panel, so slice its output to our range
-    gross_all = E.period_returns(pan, [[]] * lo + holds + [[]] * (pan.T - hi))
+    gross_all = E.period_returns(pan, [[]] * lo + holds + [[]] * (pan.T - hi),
+                                 weight=weight)
     gross = gross_all[lo:hi]
     on = pan.ma200_on[lo:hi]
     gross = np.where(on, gross, REGIME_EXPO * gross + (1 - REGIME_EXPO) * pan.rf_per)
@@ -145,6 +149,25 @@ def main() -> int:
     c, dd, sh = E.perf(vs, ppy)
     print(f"{'  + vol-scaled (15% tgt)':<26}{c*100:>8.1f}%{(c-sp_cagr)*100:>+9.1f}%"
           f"{sh:>9.2f}{dd*100:>8.1f}%")
+
+    # --- portfolio-construction variants, stated BEFORE running -------------
+    # The signal stays fixed at the pre-2012 pick, so these test construction
+    # only. Summative correlation uses a TIGHTER cap on purpose: mean|rho| is
+    # always <= max|rho|, so reusing 0.50 would LOOSEN the constraint rather
+    # than tighten it (measured: it admitted a 0.55 pair and raised the
+    # basket's average correlation from 0.274 to 0.323).
+    sig = {best: 1.0}
+    variants = [
+        ("+ sector+beta neutral", dict(sector_neutral=True, beta_neutral=True)),
+        ("+ summative corr .35",  dict(corr_mode="mean", cap=0.35)),
+        ("+ inverse-vol weights", dict(weight="invvol")),
+        ("= all three",           dict(sector_neutral=True, beta_neutral=True,
+                                       corr_mode="mean", cap=0.35, weight="invvol")),
+    ]
+    for label, kw in variants:
+        net = portfolio(pan, sig, split, pan.T, **kw)
+        c, dd, sh = E.perf(net, ppy)
+        print(f"{label:<26}{c*100:>8.1f}%{(c-sp_cagr)*100:>+9.1f}%{sh:>9.2f}{dd*100:>8.1f}%")
 
     print("\nSelection used only pre-split data. Data: Sharadar SEP/SF1 "
           "point-in-time (ART, datekey), delisted INCLUDED; universe top-1000 "

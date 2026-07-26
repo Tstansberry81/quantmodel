@@ -27,6 +27,20 @@ async function run(){
 function render(d){
   const s=d.stats||{}, spec=d.spec||{};
 
+  // If the shipped signal has been falsified, say so ABOVE the numbers —
+  // a page that shows a book and a hit-rate without this reads as a
+  // recommendation, and this one is not.
+  const ms = d.model_status;
+  const banner = document.getElementById('modelstatus');
+  if (banner) {
+    if (ms && ms.state === 'falsified') {
+      banner.innerHTML = `<b>⚠ ${ms.headline}</b><br><span class="small">${ms.detail}</span>`;
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
   document.getElementById('headline').innerHTML = [
     ['Current book', (d.current_book||[]).length+' names', ''],
     ['Book date', d.book_date||'—', ''],

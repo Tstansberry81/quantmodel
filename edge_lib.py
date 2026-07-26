@@ -261,6 +261,54 @@ def _z(s):
     return (s - mu) / sd if sd and sd > 0 else pd.Series(0.0, index=s.index)
 
 
+def neutralize(comp: pd.Series, df: pd.DataFrame, sector: bool = False,
+               beta: bool = False) -> pd.Series:
+    """Strip sector and market-beta exposure out of a cross-sectional score.
+
+    A raw momentum score is not a pure stock-selection bet: whatever sector is
+    running leads the ranking, and high-beta names dominate in a rising tape, so
+    the 'edge' is partly a leveraged sector bet. Both are removed here in score
+    space (before selection), which is the standard treatment:
+
+      sector -- subtract the sector mean, so a name competes against its OWN
+                sector rather than against whatever sector is hot.
+      beta   -- subtract the cross-sectional OLS fit on beta, leaving the part
+                of the score that beta does not explain.
+
+    Names with no beta keep their score rather than being dropped: absent data
+    is not evidence of neutrality, and dropping them would quietly bias the
+    universe toward names with a long enough history to estimate beta.
+
+    Both are removed in ONE joint regression, not two passes. Demeaning by
+    sector and then residualising on beta does NOT leave a score orthogonal to
+    both: beta varies across sectors, so the beta step puts the sector tilts
+    back (measured: group means return to ~1e-1 instead of ~1e-17). Regressing
+    on sector dummies and beta together is orthogonal to both by construction."""
+    s = pd.to_numeric(comp, errors="coerce")
+    if not (sector or beta):
+        return s
+    parts = []
+    if sector and "sector" in df.columns:
+        parts.append(pd.get_dummies(df["sector"].astype(str).reindex(s.index),
+                                    dtype=float))
+    if beta and "beta" in df.columns:
+        b = pd.to_numeric(df["beta"], errors="coerce").reindex(s.index)
+        parts.append(b.fillna(b.mean()).to_frame("beta"))
+    if not parts:
+        return s
+    X = pd.concat(parts, axis=1)
+    X["_const"] = 1.0
+    y = s.fillna(s.mean())
+    Xv, yv = X.to_numpy(float), y.to_numpy(float)
+    ok = np.isfinite(yv) & np.isfinite(Xv).all(axis=1)
+    if int(ok.sum()) <= Xv.shape[1] + 5:      # too few names to fit safely
+        return s
+    # lstsq gives the least-norm solution, so the dummies+intercept collinearity
+    # is harmless and no reference category has to be dropped by hand.
+    coef, *_ = np.linalg.lstsq(Xv[ok], yv[ok], rcond=None)
+    return pd.Series(yv - Xv @ coef, index=s.index)
+
+
 def score(df: pd.DataFrame, weights: dict | None = None) -> pd.Series:
     """Cross-sectional composite of short-horizon signals (BIC-on-short-clock).
     Default = pure 3-month momentum / relative strength."""
@@ -287,16 +335,30 @@ def select_topN(df: pd.DataFrame, n: int = N, weights: dict | None = None,
 
 
 def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126,
-                    require_fwd=True):
-    """Greedy basket: walk names best-first, admit a name only if its return
-    correlation with every already-admitted name is <= cap.
+                    require_fwd=True, corr_mode="max", sector_neutral=False,
+                    beta_neutral=False):
+    """Greedy basket: walk names best-first, admitting a name only if it is
+    sufficiently uncorrelated with what has already been admitted.
+
+    `corr_mode` decides what "sufficiently" means:
+      "max"  -- legacy: reject if the WORST single pair exceeds `cap`.
+      "mean" -- SUMMATIVE: reject if the AVERAGE pairwise correlation against
+                the whole basket exceeds `cap`. This is the diversification
+                measure that actually matters: for an equal-weight book the
+                portfolio variance falls with the MEAN pairwise correlation
+                (var ~ 1/n + (n-1)/n * rho_bar), not with the single worst
+                pair. Under "max" a name can sit at 0.49 against all nine
+                existing holdings -- passing every pairwise test -- while being
+                almost perfectly redundant with the basket as a whole.
+                (Mean <= cap is the normalised form of sum <= cap * len(chosen),
+                so the constraint stays comparable as the basket grows.)
 
     `asof` (the rebalance date) is REQUIRED for a point-in-time window -- the
     correlation is judged on the `lookback` trading days ending at `asof`, never
     future data. (Omitting it falls back to the most-recent window, which is only
     valid for a live pick, not a historical backtest.)"""
     d = _scorable(df, require_fwd)
-    d["_c"] = score(d, weights)
+    d["_c"] = neutralize(score(d, weights), d, sector_neutral, beta_neutral)
     order = list(d.sort_values("_c", ascending=False)["company_key"])
     M = D.daily_return_matrix()
     win = (M[M.index <= asof] if asof is not None else M).tail(lookback)
@@ -306,7 +368,8 @@ def corr_cap_select(df, asof=None, n=N, weights=None, cap=0.50, lookback=126,
             continue
         if not chosen:
             chosen.append(ck); continue
-        c = win[[ck] + chosen].corr().iloc[0, 1:].abs().max()
+        pair = win[[ck] + chosen].corr().iloc[0, 1:].abs()
+        c = pair.mean() if corr_mode == "mean" else pair.max()
         if pd.isna(c) or c <= cap:
             chosen.append(ck)
         if len(chosen) >= n:
@@ -337,13 +400,32 @@ def daily_from_holdings(pan: EdgePanel, holds: list, hold: int = HOLD) -> pd.Ser
     return s[~s.index.duplicated(keep="first")].fillna(0.0)
 
 
-def period_returns(pan: EdgePanel, holds: list, regime_cash: bool = False) -> np.ndarray:
-    """Equal-weight top-N forward returns per period. If regime_cash, periods
-    where the market is below its 200-day MA earn cash instead."""
+def period_returns(pan: EdgePanel, holds: list, regime_cash: bool = False,
+                   weight: str = "equal") -> np.ndarray:
+    """Top-N forward returns per period. If regime_cash, periods where the
+    market is below its 200-day MA earn cash instead.
+
+    `weight`:
+      "equal"  -- 1/n each (the shipped book).
+      "invvol" -- proportional to 1/vol_21, i.e. RISK parity rather than DOLLAR
+                  parity. Equal dollars in a 20%-vol name and an 80%-vol name
+                  is not a balanced book: the volatile name supplies most of
+                  the portfolio's variance and dominates the outcome. Weights
+                  use vol known AT the rebalance, so there is no look-ahead."""
     out = []
     for i, df in enumerate(pan.panels):
         sel = df[df["company_key"].isin(holds[i])]
-        r = float(sel["fwd_ret"].mean()) if len(sel) else 0.0
+        if not len(sel):
+            out.append(pan.rf_per if regime_cash and not pan.ma200_on[i] else 0.0)
+            continue
+        fwd = pd.to_numeric(sel["fwd_ret"], errors="coerce")
+        if weight == "invvol" and "vol_21" in sel.columns:
+            v = pd.to_numeric(sel["vol_21"], errors="coerce")
+            w = 1.0 / v.where(v > 0)
+            w = w.fillna(w.median() if w.notna().any() else 1.0)
+            r = float((fwd * w).sum() / w.sum()) if w.sum() > 0 else float(fwd.mean())
+        else:
+            r = float(fwd.mean())
         if regime_cash and not pan.ma200_on[i]:
             r = pan.rf_per
         out.append(r)
@@ -412,7 +494,8 @@ EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
 
 
 def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh,
-                  require_fwd=True):
+                  require_fwd=True, corr_mode="max", sector_neutral=False,
+                  beta_neutral=False):
     """Build the basket as K growth-gated picks + (n-K) pure-signal picks, where
     K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth.
 
@@ -421,9 +504,14 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
     def pick(frame, k):
         if k <= 0 or len(frame) < 1:
             return []
-        return (corr_cap_select(frame, asof=asof, n=k, weights=weights, cap=corr_cap,
-                                lookback=corr_lookback, require_fwd=require_fwd) if corr_cap
-                else select_topN(frame, n=k, weights=weights, require_fwd=require_fwd))
+        if corr_cap:
+            return corr_cap_select(frame, asof=asof, n=k, weights=weights, cap=corr_cap,
+                                   lookback=corr_lookback, require_fwd=require_fwd,
+                                   corr_mode=corr_mode, sector_neutral=sector_neutral,
+                                   beta_neutral=beta_neutral)
+        f = _scorable(frame, require_fwd)
+        f["_c"] = neutralize(score(f, weights), f, sector_neutral, beta_neutral)
+        return list(f.sort_values("_c", ascending=False).head(k)["company_key"])
     K = int(round(growth_mix * n))
     gpick = []
     if K > 0:
