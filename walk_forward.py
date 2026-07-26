@@ -78,6 +78,27 @@ def portfolio(pan, signal: dict, lo: int, hi: int):
     return gross - (COST_BPS / 1e4) * np.array(turn)
 
 
+def vol_scaled(net, ppy, rf_per, target=0.15, lookback=6, cap=1.0):
+    """Barroso-Santa-Clara volatility scaling, long-only.
+
+    Momentum's pathology is not weak average return, it's crashes: the OOS book
+    earns more than the index while drawing down far more. Scaling exposure by
+    target / trailing-realised-vol de-risks exactly when the strategy itself is
+    turbulent. STRICTLY CAUSAL -- rebalance i only ever sees returns < i -- and
+    capped at 1.0, i.e. de-risking only, never leverage (this is a long-only
+    cash account, not a margin book). Idle weight earns the risk-free rate."""
+    out = np.asarray(net, float)
+    scaled = np.empty_like(out)
+    for i in range(len(out)):
+        past = out[max(0, i - lookback):i]
+        if len(past) < 3 or past.std(ddof=1) <= 0:
+            e = 1.0
+        else:
+            e = min(cap, target / (past.std(ddof=1) * np.sqrt(ppy)))
+        scaled[i] = e * out[i] + (1 - e) * rf_per
+    return scaled
+
+
 def main() -> int:
     pan = E.load_edge_panel(hold=HOLD)
     split = pan.T // 2
@@ -108,11 +129,22 @@ def main() -> int:
     print(f"{'OUT-OF-SAMPLE':<26}{'CAGR':>9}{'excess':>10}{'Sharpe':>9}{'maxDD':>9}")
     print("-" * 63)
     print(f"{'S&P 500 (benchmark)':<26}{sp_cagr*100:>8.1f}%{'--':>10}{sp_sh:>9.2f}{sp_dd*100:>8.1f}%")
+    picked_net = None
     for label, sig in ((f"picked: {best}", {best: 1.0}),
                        ("shipped: accel", {"accel": 1.0})):
         net = portfolio(pan, sig, split, pan.T)
+        if picked_net is None:
+            picked_net = net
         c, dd, sh = E.perf(net, ppy)
         print(f"{label:<26}{c*100:>8.1f}%{(c-sp_cagr)*100:>+9.1f}%{sh:>9.2f}{dd*100:>8.1f}%")
+
+    # The OOS failure is risk, not return: more CAGR than the index but a far
+    # deeper drawdown. Vol-scaling targets exactly that, so test it here rather
+    # than as another full-sample config.
+    vs = vol_scaled(picked_net, ppy, pan.rf_per)
+    c, dd, sh = E.perf(vs, ppy)
+    print(f"{'  + vol-scaled (15% tgt)':<26}{c*100:>8.1f}%{(c-sp_cagr)*100:>+9.1f}%"
+          f"{sh:>9.2f}{dd*100:>8.1f}%")
 
     print("\nSelection used only pre-split data. Data: Sharadar SEP/SF1 "
           "point-in-time (ART, datekey), delisted INCLUDED; universe top-1000 "
