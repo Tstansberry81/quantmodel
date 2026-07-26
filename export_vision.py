@@ -24,13 +24,18 @@ from datetime import datetime, timezone
 import edge_lib
 import edge_tracker_lib
 
-WINDOW = "2Y"          # default primary backtest curve (valid: 1Y/2Y/3Y/5Y/10Y/20Y/MAX)
+WINDOW = "2Y"          # default primary backtest curve (must be in edge_lib.WINDOWS)
 HOLD = 21              # default 1-month rebalance clock
 MIX = 0.75            # default 75% YoY-revenue-growth mix
 LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the primary
+# The per-window summary stats ride along in the export via bt["windows"],
+# regardless of which WINDOW drives the headline curve above.
 # basket size n=10 is the product book (edge_lib.EDGE_SPEC / edge_tracker_lib.N)
 
 _REBAL_LABEL = {21: "1M", 42: "2M", 63: "3M", 126: "6M"}
+
+# fail loud at import time if either window label drifts from the model's list
+assert WINDOW in edge_lib.WINDOWS and LONG_WINDOW in edge_lib.WINDOWS
 
 
 def build(window: str = WINDOW, hold: int = HOLD, mix: float = MIX) -> dict:

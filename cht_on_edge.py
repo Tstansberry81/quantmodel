@@ -101,14 +101,16 @@ def run():
             scored.append((score, fwd))
         if len(scored) < TOPN:
             continue
+        # S&P forward return over the same hold window; skip the rebalance if
+        # the S&P can't cover the full window (stocks already require it), so
+        # model vs benchmark are always measured over identical spans.
+        sp_pos = int(np.searchsorted(spx_idx, dt, side="right")) - 1
+        if sp_pos < 0 or sp_pos + HOLD >= len(spx):
+            continue
         scored.sort(key=lambda x: x[0], reverse=True)
         picks = scored[:TOPN]
         period_ret.append(sum(f for _, f in picks) / len(picks))
-        # S&P forward return over the same hold window
-        sp_pos = int(np.searchsorted(spx_idx, dt, side="right")) - 1
-        sp_fwd = (float(spx.iloc[min(sp_pos + HOLD, len(spx) - 1)] / spx.iloc[sp_pos] - 1)
-                  if sp_pos >= 0 else 0.0)
-        sp_ret.append(sp_fwd)
+        sp_ret.append(float(spx.iloc[sp_pos + HOLD] / spx.iloc[sp_pos] - 1))
         dates.append(pd.Timestamp(d)); n_cand.append(len(cands)); n_fcf.append(fcf_have)
 
     return (np.array(period_ret), np.array(sp_ret), pd.DatetimeIndex(dates),

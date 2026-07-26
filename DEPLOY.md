@@ -20,7 +20,7 @@ zip we made earlier). **Rotate it at fiscal.ai.** The live site does NOT need it
 
 2. **Build + host the data bundle** (artifacts are too big for git):
    ```
-   .venv\Scripts\python.exe make_data_bundle.py      # -> data_bundle.zip (~193 MB)
+   .venv-mac/bin/python make_data_bundle.py      # -> data_bundle.zip (~193 MB)
    ```
    Upload `data_bundle.zip` somewhere with a **direct-download link**. Easiest:
    create a GitHub **Release** on the repo and attach the zip (assets up to 2 GB,

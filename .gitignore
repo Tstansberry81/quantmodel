@@ -8,3 +8,4 @@ _openapi_*.json
 probe_api.py
 data_bundle.zip
 *.zip
+.venv-mac/

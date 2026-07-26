@@ -41,6 +41,23 @@ UNIVERSE = 1000                      # Russell-1000 proxy: top-N by point-in-tim
 # short-horizon signal columns the trading model ranks on (market data only)
 SIGNAL_COLS = ["ret_21", "ret_63", "ret_126", "accel", "hi_252", "rs_63"]
 
+# The single source of truth for backtest/tracker window labels. app.py,
+# edge_tracker_lib, export_vision, and the templates' window buttons must all
+# agree with this list; everything but "MAX" is "<years>Y".
+WINDOWS = ("1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX")
+# windows shown in the per-window summary table (3Y is selector-only)
+SUMMARY_WINDOWS = tuple(w for w in WINDOWS if w != "3Y")
+
+
+def window_k(window: str, n_days: int) -> int:
+    """Trading days covered by a window label, capped at the series length.
+    MAX (or anything unrecognised) = the whole series. The backtest measures on
+    the DAILY curve, so windows are counted in trading days here; the tracker's
+    per-rebalance log does its own rebalance-count math off the same WINDOWS."""
+    if window == "MAX" or window not in WINDOWS:
+        return n_days
+    return min(int(window[:-1]) * 252, n_days)
+
 
 class EdgePanel:
     def __init__(self, panels, bdates, spxf, ndxf, ma200_on, mkt_daily, sectors, hold):
@@ -513,9 +530,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
                                    s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt, stagger, cr)
     T = len(model)
-    wmap = {"1Y": 252, "2Y": 504, "3Y": 756, "5Y": 1260, "10Y": 2520,
-            "20Y": 5040, "MAX": T}
-    k = min(wmap.get(window, T), T)
+    k = window_k(window, T)
     if k < 20:
         return {"ok": False, "reason": "window too short"}
     sl = slice(T - k, T)
@@ -537,8 +552,8 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                 "max_drawdown": dd, "total_return": tot}
 
     windows = []
-    for wn in ("1Y", "2Y", "5Y", "10Y", "20Y", "MAX"):
-        kk = min(wmap[wn], T)
+    for wn in SUMMARY_WINDOWS:
+        kk = window_k(wn, T)
         cg, dd, sh = _perf_daily(model[T - kk:T]); cs, _, _ = _perf_daily(spx[T - kk:T])
         windows.append({"w": wn, "cagr": cg, "sharpe": sh, "dd": dd,
                         "sp_cagr": cs, "excess": cg - cs})

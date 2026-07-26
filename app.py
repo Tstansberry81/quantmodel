@@ -102,7 +102,14 @@ def page_model():
 
 
 # ---- json api --------------------------------------------------------------
-_EDGE_WINDOWS = {"1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX"}
+@lru_cache(maxsize=1)
+def _edge_windows() -> frozenset:
+    # lazy so the heavy edge_lib import stays off the boot path; the window
+    # list itself is single-sourced from edge_lib.WINDOWS
+    import edge_lib
+    return frozenset(edge_lib.WINDOWS)
+
+
 _EDGE_HOLDS = {21, 42, 63, 126}
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 _EDGE_NS = set(range(5, 11))                # basket-size selector: 5..10 stocks
@@ -173,7 +180,7 @@ def api_edge_backtest():
         return jsonify({"ok": False, "reason": "Too many requests — please wait a moment."})
     body = request.get_json(silent=True) or {}
     window = (body.get("window", "MAX") or "MAX").upper()
-    if window not in _EDGE_WINDOWS:
+    if window not in _edge_windows():
         window = "MAX"
     try:
         hold = int(body.get("hold", 42))
@@ -207,7 +214,7 @@ def api_edge_tracker():
     if hold not in _EDGE_HOLDS:
         hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
     window = (request.args.get("window", "MAX") or "MAX").upper()
-    if window not in _EDGE_WINDOWS:
+    if window not in _edge_windows():
         window = "MAX"
     try:
         mix = round(float(request.args.get("mix", 0.75)), 2)

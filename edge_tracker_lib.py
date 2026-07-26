@@ -297,13 +297,14 @@ def _log_stats(log):
     }
 
 
-# window label -> rebalances, derived from rebalances-per-year (ppy = 252/hold),
-# matching the backtest's window math so the two pages agree.
+# window label -> REBALANCES. Deliberately not edge_lib.window_k: that counts
+# trading days for the backtest's daily curve, whereas the tracker's paper log
+# has one row per rebalance. Only the WINDOWS list is shared, so the two pages
+# can never offer a window the other doesn't know.
 def _window_k(n_rebals, ppy, window):
-    wmap = {"1Y": round(ppy), "2Y": round(2 * ppy), "3Y": round(3 * ppy),
-            "5Y": round(5 * ppy), "10Y": round(10 * ppy),
-            "20Y": round(20 * ppy), "MAX": n_rebals}
-    return max(2, min(int(wmap.get(window, n_rebals)), n_rebals))
+    if window == "MAX" or window not in E.WINDOWS:
+        return n_rebals
+    return max(2, min(int(round(int(window[:-1]) * ppy)), n_rebals))
 
 
 def _read_snapshots():
@@ -406,7 +407,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
     are always the live values."""
     try:
         hold = int(hold) if int(hold) in (21, 42, 63, 126) else HOLD
-        window = window if window in ("1Y", "2Y", "3Y", "5Y", "10Y", "20Y", "MAX") else "MAX"
+        window = window if window in E.WINDOWS else "MAX"
         n = int(n) if 5 <= int(n) <= 10 else N
         mix = round(float(mix), 2)
         if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
