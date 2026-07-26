@@ -8,3 +8,4 @@ hmmlearn>=0.3
 yfinance>=0.2
 gunicorn>=21.2          # production WSGI server (Render/Railway)
 anthropic>=0.40         # in-app "explain the numbers" chat assistant
+pyarrow>=14.0          # parquet/feather IO for the Sharadar ingest

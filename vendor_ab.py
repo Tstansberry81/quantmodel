@@ -46,7 +46,13 @@ print(json.dumps({"ok": True, "windows": rows, "n_names": len(data),
 def run(artifact: str, hold: int) -> dict:
     import json
     env = dict(**__import__("os").environ, EDGE_ARTIFACT=artifact)
-    env.pop("EDGE_USE_PIT_UNIVERSE", None)     # let each panel speak for itself
+    # Hold the UNIVERSE RULE fixed at the top-N-by-PIT-mcap proxy for both runs.
+    # Without this the Sharadar panel would auto-activate pit_universe's
+    # SharadarAdapter (its meta says source=sharadar), swapping the universe
+    # DEFINITION at the same time as the data -- two changes at once, and the
+    # comparison would no longer isolate data quality. The same rule on
+    # survivorship-free data is exactly the honest version of that rule.
+    env["EDGE_USE_PIT_UNIVERSE"] = "0"
     p = subprocess.run([sys.executable, "-c", _CHILD, str(hold)],
                        capture_output=True, text=True, env=env)
     line = [l for l in p.stdout.splitlines() if l.startswith("{")]
@@ -67,7 +73,10 @@ def main(argv: list[str]) -> int:
         if not r.get("ok"):
             print(f"{label:10} FAILED: {r.get('reason')}")
             continue
-        print(f"{label:10} source={r['source']:9} names={r['n_names']:,} "
+        # Label by the ARTIFACT actually loaded, not meta.json's `source`:
+        # meta.json describes whichever panel was built last, so it reports the
+        # same vendor for both runs and hides which file each one really read.
+        print(f"{label:10} artifact={r['artifact']:26} names={r['n_names']:,} "
               f"delisted={r['n_dead']:,} ({r['n_dead']/max(r['n_names'],1)*100:.0f}%)")
     print()
     header = f"{'window':<8}" + "".join(f"{lbl:>26}" for lbl in results)

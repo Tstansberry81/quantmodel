@@ -148,11 +148,14 @@ def _read_zip_csv_chunked(table: str, usecols, keep_tickers: set,
 # ---------------------------------------------------------------------------
 # build
 # ---------------------------------------------------------------------------
-def _company_key(row) -> str:
+def _company_key(row, ticker: str) -> str:
     """Mirror the fiscal.ai key format 'EXCHANGE_TICKER' so existing caches,
-    the PIT layer and the tracker's snapshot history all still line up."""
+    the PIT layer and the tracker's snapshot history all still line up.
+
+    `ticker` is passed in rather than read off `row`: the caller indexes the
+    metadata BY ticker, so it is the row's index label, not one of its fields."""
     ex = str(row.get("exchange") or "NA").upper().replace(" ", "")
-    return f"{ex}_{row['ticker']}"
+    return f"{ex}_{ticker}"
 
 
 def build(min_history: int = 260) -> dict:
@@ -196,7 +199,25 @@ def build(min_history: int = 260) -> dict:
     eligible &= set(meta["ticker"])
     print(f"      {len(eligible):,} tickers ever >= ${MCAP_KEEP/1e9:.0f}B (of "
           f"{sf1['ticker'].nunique():,} with fundamentals)")
-    sep = _read_zip_csv_chunked("SEP", ["ticker", "date", "closeadj"], eligible)
+    # The 55M-row scan is by far the slowest step; cache its (small) output so
+    # a failure later in the build doesn't cost another full pass.
+    cache = RAW / "sep_filtered.pkl"
+    sep = None
+    if cache.exists():
+        try:
+            sep = pd.read_pickle(cache)
+            print(f"      reusing {cache.name}")
+        except Exception as e:
+            print(f"      cache unreadable ({e}); rescanning")
+    if sep is None:
+        sep = _read_zip_csv_chunked("SEP", ["ticker", "date", "closeadj"], eligible)
+        # The cache is an optimisation. It must never be able to fail the
+        # build -- losing a completed 55M-row scan to a cache write is worse
+        # than having no cache at all.
+        try:
+            sep.to_pickle(cache)
+        except Exception as e:
+            print(f"      WARN could not cache the scan ({e}); continuing")
     sep["date"] = pd.to_datetime(sep["date"], errors="coerce")
     sep = sep.dropna(subset=["date", "closeadj"])
     print(f"      {len(sep):,} price rows, {sep['ticker'].nunique():,} tickers")
@@ -230,7 +251,7 @@ def build(min_history: int = 260) -> dict:
                                               "growth_revenue_1y"],
                                      index=pd.DatetimeIndex([]))
 
-        out[_company_key(m)] = {
+        out[_company_key(m, tk)] = {
             "prices": prices,
             "fund_hist": fund_hist,
             "meta": {"ticker": tk,
