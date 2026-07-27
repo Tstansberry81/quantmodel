@@ -67,7 +67,7 @@ SF1_COLS = ["ticker", "datekey", "calendardate", "marketcap", "revenueusd",
             "de", "debt", "equity", "currentratio", "assets",
             # valuation as filed (stale between filings -- DAILY is preferred,
             # these are the fallback when the DAILY table isn't downloaded)
-            "pe", "pb", "ps", "evebitda",
+            "pe", "pb", "ps", "evebitda", "divyield",
             # inputs for the academically-strongest quality/anomaly measures:
             # Novy-Marx gross profitability, Sloan accruals, net share issuance
             "sharesbas", "shareswa"]
@@ -85,12 +85,14 @@ FUND_ATTACH = ("roic", "roe", "roa", "grossmargin", "netmargin", "fcf_margin",
                "ebitda_margin", "growth_fcf_1y", "growth_netinc_1y",
                "de", "debt_ebitda", "currentratio",
                "pe", "pb", "ps", "evebitda",
-               "gp_assets", "accruals", "share_issuance", "fcf")
+               "gp_assets", "accruals", "share_issuance", "fcf",
+               "asset_growth", "earnings_quality", "capex_assets",
+               "shareholder_yield", "divyield")
 
 # Price-history cutoff: keep any name that EVER reached this market cap. Set
 # well below the product's $2B liquidity floor so no selectable name is lost,
 # while keeping the SEP scan tractable.
-MCAP_KEEP = 1e9
+MCAP_KEEP = 2e8
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +248,20 @@ def build(min_history: int = 260) -> dict:
     prev_sh = sf1.groupby("ticker")["sharesbas"].shift(4)
     sf1["share_issuance"] = np.where(prev_sh > 0,
                                      (sf1["sharesbas"] - prev_sh) / prev_sh, np.nan)
+    # Asset growth (Cooper-Gulen-Schill 2008): firms that balloon the balance
+    # sheet underperform. One of the most robust anomalies on record; ranked
+    # negatively.
+    prev_a = sf1.groupby("ticker")["assets"].shift(4)
+    sf1["asset_growth"] = np.where(prev_a > 0, (sf1["assets"] - prev_a) / prev_a, np.nan)
+    # Earnings quality: cash from operations over reported net income. Below 1
+    # means the profit isn't showing up as cash. Undefined for loss-makers.
+    ni = sf1["netinc"].where(sf1["netinc"] > 0)
+    sf1["earnings_quality"] = sf1["ncfo"] / ni
+    # Investment intensity: capex as a share of assets (capex is negative in
+    # the cash-flow statement, so flip it). High spenders historically lag.
+    sf1["capex_assets"] = (-sf1["capex"]) / assets
+    # Shareholder yield: dividend yield plus net buyback (negative issuance).
+    sf1["shareholder_yield"] = sf1["divyield"].fillna(0.0) - sf1["share_issuance"]
     print(f"      {len(sf1):,} ART filings, {sf1['ticker'].nunique():,} tickers")
 
     print("[3/4] prices (SEP, closeadj) …", flush=True)
@@ -261,7 +277,7 @@ def build(min_history: int = 260) -> dict:
           f"{sf1['ticker'].nunique():,} with fundamentals)")
     # The 55M-row scan is by far the slowest step; cache its (small) output so
     # a failure later in the build doesn't cost another full pass.
-    cache = RAW / "sep_filtered.pkl"
+    cache = RAW / f"sep_filtered_{int(MCAP_KEEP/1e6)}m.pkl"
     sep = None
     if cache.exists():
         try:
