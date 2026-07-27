@@ -523,14 +523,49 @@ EDGE_SPEC = dict(
                                 # ranked NEGATIVELY on honest data (-1.61%/reb,
                                 # t=-2.5, negative in both halves).
     growth_thresh=0.15,
+    sector_cap=2,               # max 2 names per sector, so a 10-name book
+                                # spans >=5 sectors. The live book was 9/10
+                                # Technology -- one industry shock owned the
+                                # portfolio. Measured: -47% -> -41% drawdown
+                                # for 2.6pts of CAGR, Sharpe 0.82 -> 0.80.
+                                # Caps of 3/4/5 did NOT help (drawdown -48/-52/
+                                # -49%) -- only a hard 2 forces real breadth.
     stagger=False,              # OFF: costs 0.8pts; adopted for accel.
     continuous_regime=False)    # OFF: the daily de-risk buys 3pts of drawdown
                                 # for 2.6pts of return against momentum -- a bad
                                 # trade (Sharpe 0.70 -> 0.76 when removed).
 
+def _sector_capped(frame, k, cap):
+    """Walk best-first, admitting a name only while its sector is under `cap`.
+
+    A 10-name momentum book has no sector control at all: whatever sector is
+    running takes the whole basket (the live book was 9/10 Technology). This
+    is a RISK control justified before any backtest -- it bounds how much of
+    the portfolio one industry shock can take -- not a fitted parameter.
+    If the cap can't be filled (too few sectors represented), the remainder is
+    back-filled in score order so the book is never short of names."""
+    counts, chosen = {}, []
+    order = list(frame["company_key"])
+    secs = dict(zip(frame["company_key"], frame.get("sector", pd.Series(index=frame.index)).astype(str)))
+    for ck in order:
+        sec = secs.get(ck, "Unknown")
+        if counts.get(sec, 0) >= cap:
+            continue
+        counts[sec] = counts.get(sec, 0) + 1
+        chosen.append(ck)
+        if len(chosen) >= k:
+            return chosen
+    for ck in order:                      # back-fill rather than return short
+        if ck not in chosen:
+            chosen.append(ck)
+        if len(chosen) >= k:
+            break
+    return chosen[:k]
+
+
 def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh,
                   require_fwd=True, corr_mode="max", sector_neutral=False,
-                  beta_neutral=False, fcf_screen=False):
+                  beta_neutral=False, fcf_screen=False, sector_cap=None):
     """Build the basket as K growth-gated picks + (n-K) pure-signal picks, where
     K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth.
 
@@ -546,7 +581,10 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
                                    beta_neutral=beta_neutral)
         f = _scorable(frame, require_fwd)
         f["_c"] = neutralize(score(f, weights), f, sector_neutral, beta_neutral)
-        return list(f.sort_values("_c", ascending=False).head(k)["company_key"])
+        f = f.sort_values("_c", ascending=False)
+        if sector_cap:
+            return _sector_capped(f, k, int(sector_cap))
+        return list(f.head(k)["company_key"])
     if fcf_screen and "fcf_margin" in d.columns:
         # Halve the pool on cash generation BEFORE ranking. Applied here so it
         # binds identically for the backtest and the live book.
@@ -576,7 +614,8 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
 # Entries are small (a handful of ~250-float arrays), so this costs ~MBs.
 @lru_cache(maxsize=160)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
-               signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False):
+               signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False,
+               sector_cap=None):
     """Compute the full-history Edge once (cached). Returns the per-period gross
     & net returns, turnover, and aligned S&P / Nasdaq returns.
 
@@ -588,7 +627,8 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
     for i, df in enumerate(pan.panels):
         d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
-                            growth_mix, growth_thresh, fcf_screen=fcf_screen)
+                            growth_mix, growth_thresh, fcf_screen=fcf_screen,
+                            sector_cap=sector_cap)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur; holds.append(cks)
@@ -604,13 +644,14 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
 
 # ---- daily buy-and-hold simulation + staggered sleeves ----------------------
 def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
-                  growth_mix, growth_thresh, fcf_screen=False):
+                  growth_mix, growth_thresh, fcf_screen=False, sector_cap=None):
     """Full-spec per-rebalance selection + membership turnover for one panel."""
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
         d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
-                            growth_mix, growth_thresh, fcf_screen=fcf_screen)
+                            growth_mix, growth_thresh, fcf_screen=fcf_screen,
+                            sector_cap=sector_cap)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur; holds.append(cks)
@@ -619,7 +660,8 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
 
 @lru_cache(maxsize=64)
 def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
-                         corr_lookback, growth_mix, growth_thresh, fcf_screen=False):
+                         corr_lookback, growth_mix, growth_thresh, fcf_screen=False,
+                         sector_cap=None):
     """Selection is the SAME for the net and gross backtest passes (cost doesn't
     change which names are picked), and it's the dominant cost (~8s/sleeve via the
     correlation cap). Cache it on the hashable spec so the gross pass — and repeat
@@ -627,7 +669,7 @@ def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
     pan = load_edge_panel(hold=hold, offset_days=offset_days)
     holds, turn = _select_holds(pan, n, dict(signal_key), mcap_floor, corr_cap,
                                 corr_lookback, growth_mix, growth_thresh,
-                                fcf_screen=fcf_screen)
+                                fcf_screen=fcf_screen, sector_cap=sector_cap)
     return pan, holds, turn
 
 
@@ -687,7 +729,7 @@ def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, regime_daily
 @lru_cache(maxsize=16)
 def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                 signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False,
-                fcf_screen=False):
+                fcf_screen=False, sector_cap=None):
     """Daily NET return series for the tradeable Edge (staggered sleeves when
     stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
     the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough.
@@ -702,7 +744,7 @@ def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_
     for off in offsets:
         pan, holds, turn = _select_holds_cached(hold, off, n, signal_key, mcap_floor,
                                                 corr_cap, corr_lookback, growth_mix,
-                                                growth_thresh, fcf_screen)
+                                                growth_thresh, fcf_screen, sector_cap)
         series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:
@@ -774,13 +816,14 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     gm = float(s.get("growth_mix", 0.0) or 0.0); gt = float(s.get("growth_thresh", 0.15))
     cr = bool(s.get("continuous_regime", False))
     fs = bool(s.get("fcf_screen", False))
+    sc_cap = s.get("sector_cap")
     idx, model, spx, ndx, avg_to, prim = _edge_daily(
         hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
-        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr, fs)
+        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr, fs, sc_cap)
     # gross (cost-free) daily model, for the gross->net turnover card
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
                                    s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt,
-                                   stagger, cr, fs)
+                                   stagger, cr, fs, sc_cap)
     T = len(model)
     k = window_k(window, T)
     if k < 20:
@@ -834,7 +877,9 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
                  "cost_bps": s["cost_bps"], "stagger": stagger,
-                 "growth_mix": gm, "growth_thresh": gt, "continuous_regime": cr},
+                 "growth_mix": gm, "growth_thresh": gt, "continuous_regime": cr,
+                 # surfaced so the page describes what actually runs (rules #7)
+                 "sector_cap": sc_cap, "fcf_screen": fs},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},
         "curves": {"dates": dstr, "model": mcurve,
                    "sp500": curve(sr)[1], "nasdaq": curve(nr)[1]},

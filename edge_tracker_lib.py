@@ -28,6 +28,7 @@ PAPER_N = 7                         # research candidate (2026-07 signal-hunt ca
                                     # paper-tracked forward ALONGSIDE the product book
 MCAP_FLOOR = 1e10        # $10B: momentum is a large-cap effect
 CORR_CAP = None          # off: it fights the signal (-2.5pts)
+SECTOR_CAP = 2           # max 2 names per sector (mirrors EDGE_SPEC)
 CORR_LOOKBACK = 126
 REGIME_EXPO = 0.25
 COST_BPS = 10.0
@@ -259,7 +260,8 @@ def _current_book(pan, data, n, mix):
     bdate = pan.live_date if live else pan.bdates[pan.T - 1]
     floored = df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df
     cks = E._blend_select(floored, bdate, n, SIGNAL, CORR_CAP,
-                          CORR_LOOKBACK, mix, GROWTH_THRESH, require_fwd=not live)
+                          CORR_LOOKBACK, mix, GROWTH_THRESH, require_fwd=not live,
+                          sector_cap=SECTOR_CAP)
     w = 1.0 / len(cks) if cks else 0.0
     idx = df.set_index("company_key")
     accel = idx["accel"]
@@ -527,6 +529,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
                 "cost_bps": COST_BPS, "signal": _SIGNAL_LABEL,
                 "growth_mix": mix, "growth_thresh": GROWTH_THRESH,
+                "sector_cap": SECTOR_CAP,
             },
             "model_status": MODEL_STATUS,
         }
