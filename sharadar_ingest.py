@@ -63,11 +63,14 @@ SF1_COLS = ["ticker", "datekey", "calendardate", "marketcap", "revenueusd",
             "roic", "roe", "roa", "grossmargin", "netmargin",
             # cash generation
             "fcf", "ncfo", "capex", "netinc", "ebitda",
-            # leverage / solvency
-            "de", "debt", "equity", "currentratio",
+            # leverage / solvency (assets also scales GP/assets and accruals)
+            "de", "debt", "equity", "currentratio", "assets",
             # valuation as filed (stale between filings -- DAILY is preferred,
             # these are the fallback when the DAILY table isn't downloaded)
-            "pe", "pb", "ps", "evebitda"]
+            "pe", "pb", "ps", "evebitda",
+            # inputs for the academically-strongest quality/anomaly measures:
+            # Novy-Marx gross profitability, Sloan accruals, net share issuance
+            "sharesbas", "shareswa"]
 
 # Daily point-in-time valuation. Sharadar recomputes these EVERY trading day
 # off the then-known fundamentals and that day's price, so a name whose price
@@ -81,7 +84,8 @@ DAILY_COLS = ["ticker", "date", "marketcap", "pe", "pb", "ps", "evebitda", "ev"]
 FUND_ATTACH = ("roic", "roe", "roa", "grossmargin", "netmargin", "fcf_margin",
                "ebitda_margin", "growth_fcf_1y", "growth_netinc_1y",
                "de", "debt_ebitda", "currentratio",
-               "pe", "pb", "ps", "evebitda")
+               "pe", "pb", "ps", "evebitda",
+               "gp_assets", "accruals", "share_issuance", "fcf")
 
 # Price-history cutoff: keep any name that EVER reached this market cap. Set
 # well below the product's $2B liquidity floor so no selectable name is lost,
@@ -226,6 +230,22 @@ def build(min_history: int = 260) -> dict:
     # misstate leverage for cash-rich names. Undefined when EBITDA <= 0.
     eb = sf1["ebitda"].where(sf1["ebitda"] > 0)
     sf1["debt_ebitda"] = sf1["debt"] / eb
+
+    # --- the three anomalies with the strongest replication record -----------
+    # Novy-Marx (2013) gross profitability: gross profit over ASSETS, not over
+    # sales. Gross margin alone just sorts by industry (software ~80%, retail
+    # ~25%); scaling by assets asks how much gross profit the balance sheet
+    # actually produces, which is comparable across sectors.
+    assets = sf1["assets"].where(sf1["assets"] > 0)
+    sf1["gp_assets"] = (sf1["grossmargin"] * sf1["revenueusd"]) / assets
+    # Sloan (1996) accruals: earnings not backed by cash. Negative is good, so
+    # the sign is flipped where it is ranked.
+    sf1["accruals"] = (sf1["netinc"] - sf1["ncfo"]) / assets
+    # Net share issuance (Daniel-Titman / Pontiff-Woodgate): YoY change in
+    # shares outstanding. Dilution is bad, buybacks good -> ranked negatively.
+    prev_sh = sf1.groupby("ticker")["sharesbas"].shift(4)
+    sf1["share_issuance"] = np.where(prev_sh > 0,
+                                     (sf1["sharesbas"] - prev_sh) / prev_sh, np.nan)
     print(f"      {len(sf1):,} ART filings, {sf1['ticker'].nunique():,} tickers")
 
     print("[3/4] prices (SEP, closeadj) …", flush=True)
@@ -317,7 +337,7 @@ def build(min_history: int = 260) -> dict:
         dv = daily_by_ticker.get(tk)
         if dv is not None and len(dv):
             dcols = {f"{c}_d": dv[c].values for c in
-                     ("pe", "pb", "ps", "evebitda", "marketcap") if c in dv.columns}
+                     ("pe", "pb", "ps", "evebitda", "marketcap", "ev") if c in dv.columns}
             dhist = pd.DataFrame(dcols, index=pd.DatetimeIndex(dv["date"])).sort_index()
             dhist = dhist[~dhist.index.duplicated(keep="last")]
             fund_hist = (fund_hist.join(dhist, how="outer").sort_index()
