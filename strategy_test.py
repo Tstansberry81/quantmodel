@@ -43,11 +43,12 @@ HOLDOUT = pd.Timestamp("2021-01-01")
 TEST = pd.Timestamp("2012-09-01")
 
 
-def build(pan, n, signal="ret_12_1", issuance_screen=False, regime=True):
+def build(pan, n, signal="ret_12_1", issuance_screen=False, regime=True,
+          floor=LARGE_FLOOR):
     """Per-rebalance net returns for the long-only book."""
     rets, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
-        d = df[pd.to_numeric(df["pit_mcap"], errors="coerce") >= LARGE_FLOOR]
+        d = df[pd.to_numeric(df["pit_mcap"], errors="coerce") >= floor]
         fwd = pd.to_numeric(d["fwd_ret"], errors="coerce")
         d = d[np.isfinite(fwd)]
         if len(d) < n * 2:
@@ -115,6 +116,24 @@ def main(argv) -> int:
     for n in (20, 50):
         report(pan, f"  regime OFF (always in), n={n}",
                build(pan, n, regime=False), masks, ppy)
+
+    # --- how far down-cap does the eligible pool stay tradeable? -------------
+    # Momentum measured as a large-cap effect, so widening the pool should
+    # dilute it. Worth measuring rather than assuming: a wider pool also means
+    # more names to choose from, which could offset the weaker average signal.
+    print(f"\n{'ELIGIBLE-UNIVERSE SWEEP (n=30, regime on)':<34}"
+          + "".join(f"{k+' xs/Sh/DD':>22}" for k in masks))
+    print("-" * len(hdr))
+    for fl, lbl in ((1e10, ">= $10B  (large only)"), (5e9, ">= $5B"),
+                    (2e9, ">= $2B   (old product)"), (1e9, ">= $1B"),
+                    (5e8, ">= $500M"), (2e8, ">= $200M (everything)")):
+        report(pan, f"  {lbl}", build(pan, 30, floor=fl), masks, ppy)
+    print(f"\n{'SAME, n=50 + no-diluter screen':<34}"
+          + "".join(f"{k+' xs/Sh/DD':>22}" for k in masks))
+    print("-" * len(hdr))
+    for fl, lbl in ((1e10, ">= $10B"), (2e9, ">= $2B"), (5e8, ">= $500M")):
+        report(pan, f"  {lbl}", build(pan, 50, issuance_screen=True, floor=fl),
+               masks, ppy)
     print("\nCells are EXCESS CAGR vs the S&P, Sharpe, and max drawdown.")
     print("Data: Sharadar point-in-time, delisted INCLUDED; 12-1 momentum; "
           f"exposure cut to {REGIME_EXPO:.0%} when the S&P is below its 200dMA.")
