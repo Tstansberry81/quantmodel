@@ -58,7 +58,30 @@ FILING_LAG_DAYS = 1
 
 # Columns we keep from SF1/ART. `marketcap` drives the point-in-time universe
 # ranking; `revenueusd` drives the growth mix.
-SF1_COLS = ["ticker", "datekey", "calendardate", "marketcap", "revenueusd"]
+SF1_COLS = ["ticker", "datekey", "calendardate", "marketcap", "revenueusd",
+            # profitability / quality
+            "roic", "roe", "roa", "grossmargin", "netmargin",
+            # cash generation
+            "fcf", "ncfo", "capex", "netinc", "ebitda",
+            # leverage / solvency
+            "de", "debt", "equity", "currentratio",
+            # valuation as filed (stale between filings -- DAILY is preferred,
+            # these are the fallback when the DAILY table isn't downloaded)
+            "pe", "pb", "ps", "evebitda"]
+
+# Daily point-in-time valuation. Sharadar recomputes these EVERY trading day
+# off the then-known fundamentals and that day's price, so a name whose price
+# halves shows the new multiple immediately. SF1's own pe/pb/ps are as-of the
+# filing and stay stale for up to a quarter -- fatal for a valuation screen,
+# which is exactly the thing being tested here.
+DAILY_COLS = ["ticker", "date", "marketcap", "pe", "pb", "ps", "evebitda", "ev"]
+
+# Fundamental columns attached to every panel row (on top of market cap and
+# revenue growth, which the model already used).
+FUND_ATTACH = ("roic", "roe", "roa", "grossmargin", "netmargin", "fcf_margin",
+               "ebitda_margin", "growth_fcf_1y", "growth_netinc_1y",
+               "de", "debt_ebitda", "currentratio",
+               "pe", "pb", "ps", "evebitda")
 
 # Price-history cutoff: keep any name that EVER reached this market cap. Set
 # well below the product's $2B liquidity floor so no selectable name is lost,
@@ -186,6 +209,23 @@ def build(min_history: int = 260) -> dict:
     # per ticker from filings ~4 quarters apart.
     sf1["growth_revenue_1y"] = (sf1.groupby("ticker")["revenueusd"]
                                    .pct_change(periods=4))
+    # Derived fundamentals. ART filings are quarterly TTM snapshots, so a 4-step
+    # change is year-on-year. pct_change is meaningless when the base is <= 0
+    # (a swing from -10 to +5 is not "-150% growth"), so those are dropped
+    # rather than allowed to masquerade as extreme growth.
+    for src, dst in (("fcf", "growth_fcf_1y"), ("netinc", "growth_netinc_1y")):
+        prev = sf1.groupby("ticker")[src].shift(4)
+        sf1[dst] = np.where(prev > 0, (sf1[src] - prev) / prev, np.nan)
+    rev = sf1["revenueusd"].where(sf1["revenueusd"] > 0)
+    sf1["fcf_margin"] = sf1["fcf"] / rev
+    sf1["ebitda_margin"] = sf1["ebitda"] / rev
+    # Gross debt / EBITDA -- the leverage measure an analyst actually reaches
+    # for, and more robust than `de` (debt/equity), which blows up or flips
+    # sign when buybacks drive book equity negative. Gross, not NET, of cash:
+    # cashneq isn't pulled, and silently calling debt/EBITDA "net debt" would
+    # misstate leverage for cash-rich names. Undefined when EBITDA <= 0.
+    eb = sf1["ebitda"].where(sf1["ebitda"] > 0)
+    sf1["debt_ebitda"] = sf1["debt"] / eb
     print(f"      {len(sf1):,} ART filings, {sf1['ticker'].nunique():,} tickers")
 
     print("[3/4] prices (SEP, closeadj) …", flush=True)
@@ -222,6 +262,25 @@ def build(min_history: int = 260) -> dict:
     sep = sep.dropna(subset=["date", "closeadj"])
     print(f"      {len(sep):,} price rows, {sep['ticker'].nunique():,} tickers")
 
+    # Daily point-in-time valuation, resampled to month-end. Full daily
+    # resolution for 7k names would add gigabytes to the artifact for no gain:
+    # the rebalance clock is 42 trading days, so month-end multiples are at
+    # most ~3 weeks stale versus a hold twice that long -- and still far fresher
+    # than SF1's as-filed ratios, which can be a full quarter behind.
+    daily_by_ticker: dict = {}
+    if (RAW / "DAILY.zip").exists():
+        print("[3b/4] daily valuation (DAILY) …", flush=True)
+        dly = _read_zip_csv_chunked("DAILY", DAILY_COLS, eligible)
+        dly["date"] = pd.to_datetime(dly["date"], errors="coerce")
+        dly = dly.dropna(subset=["date"]).sort_values(["ticker", "date"])
+        dly = (dly.set_index("date").groupby("ticker")
+                  .resample("ME").last().drop(columns=["ticker"], errors="ignore"))
+        dly = dly.reset_index()
+        daily_by_ticker = dict(tuple(dly.groupby("ticker")))
+        print(f"      {len(dly):,} month-end rows, {len(daily_by_ticker):,} tickers")
+    else:
+        print("[3b/4] DAILY.zip absent — falling back to SF1 as-filed multiples")
+
     print("[4/4] assembling artifact …", flush=True)
     meta_by_ticker = meta.set_index("ticker")
     fund_by_ticker = dict(tuple(sf1.groupby("ticker")))
@@ -240,16 +299,32 @@ def build(min_history: int = 260) -> dict:
 
         fh = fund_by_ticker.get(tk)
         if fh is not None and len(fh):
-            fund_hist = pd.DataFrame(
-                {"calculated_market_cap": fh["marketcap"].values,
-                 "growth_revenue_1y": fh["growth_revenue_1y"].values},
-                index=pd.DatetimeIndex(fh["available"]),
-            ).sort_index()
+            cols = {"calculated_market_cap": fh["marketcap"].values,
+                    "growth_revenue_1y": fh["growth_revenue_1y"].values}
+            for c in FUND_ATTACH:
+                if c in fh.columns:
+                    cols[c] = fh[c].values
+            fund_hist = pd.DataFrame(cols, index=pd.DatetimeIndex(fh["available"])).sort_index()
             fund_hist = fund_hist[~fund_hist.index.duplicated(keep="last")]
         else:
-            fund_hist = pd.DataFrame(columns=["calculated_market_cap",
-                                              "growth_revenue_1y"],
-                                     index=pd.DatetimeIndex([]))
+            fund_hist = pd.DataFrame(
+                columns=["calculated_market_cap", "growth_revenue_1y"] + list(FUND_ATTACH),
+                index=pd.DatetimeIndex([]))
+
+        # Daily-PIT multiples override the as-filed ones where available: same
+        # column names, so downstream code is unchanged and simply gets fresher
+        # numbers. Suffixed _d so a screen can tell which source it is using.
+        dv = daily_by_ticker.get(tk)
+        if dv is not None and len(dv):
+            dcols = {f"{c}_d": dv[c].values for c in
+                     ("pe", "pb", "ps", "evebitda", "marketcap") if c in dv.columns}
+            dhist = pd.DataFrame(dcols, index=pd.DatetimeIndex(dv["date"])).sort_index()
+            dhist = dhist[~dhist.index.duplicated(keep="last")]
+            fund_hist = (fund_hist.join(dhist, how="outer").sort_index()
+                         if len(fund_hist) else dhist)
+            # forward-fill so a rebalance between filings still sees the last
+            # known value of each series rather than a hole
+            fund_hist = fund_hist.ffill()
 
         out[_company_key(m, tk)] = {
             "prices": prices,

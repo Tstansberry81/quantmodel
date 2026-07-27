@@ -116,14 +116,20 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
         rets = np.empty(len(arr)); rets[0] = np.nan; rets[1:] = arr[1:] / arr[:-1] - 1
         mret = np.asarray(mret_full.reindex(pr.index, method="ffill").values, float)
         fh = blob.get("fund_hist"); fidx = None; mcap = None; rgr = None
+        funds = {}
         if fh is not None and not fh.empty:
             fidx = np.asarray(fh.index.values, "datetime64[ns]")
             if "calculated_market_cap" in fh.columns:
                 mcap = np.asarray(fh["calculated_market_cap"].values, float)
             if "growth_revenue_1y" in fh.columns:
                 rgr = np.asarray(fh["growth_revenue_1y"].values, float)
+            # Any other fundamental the artifact carries rides along, so a new
+            # ingest column becomes screenable without touching this loader.
+            for c in fh.columns:
+                if c not in ("calculated_market_cap", "growth_revenue_1y"):
+                    funds[c] = np.asarray(fh[c].values, float)
         prep[ck] = {"arr": arr, "pidx": pidx, "rets": rets, "mret": mret,
-                    "fidx": fidx, "mcap": mcap, "rgr": rgr,
+                    "fidx": fidx, "mcap": mcap, "rgr": rgr, "funds": funds,
                     "sector": blob.get("meta", {}).get("sector", "Unknown")}
 
     def asof(fidx, varr, dlag):
@@ -232,6 +238,10 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                            else (np.nan if is_live
                                  else (arr[-1] * (1.0 + DELIST_HAIRCUT)) / arr[pos + 1] - 1),
             }
+            # Fundamentals, read as-of the SAME lagged date as revenue growth,
+            # so every fundamental in the row was public before the trade.
+            for _c, _v in P["funds"].items():
+                row[_c] = asof(P["fidx"], _v, dlag)
             if is_live:                       # mark the open position to the latest close
                 row["fwd_todate"] = arr[-1] / arr[pos + 1] - 1
             rows.append(row)
