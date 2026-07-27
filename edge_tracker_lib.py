@@ -26,12 +26,13 @@ HOLD = 42
 N = 10                              # product basket size (10-stock book)
 PAPER_N = 7                         # research candidate (2026-07 signal-hunt campaign):
                                     # paper-tracked forward ALONGSIDE the product book
-MCAP_FLOOR = 2e9
-CORR_CAP = 0.50
+MCAP_FLOOR = 1e10        # $10B: momentum is a large-cap effect
+CORR_CAP = None          # off: it fights the signal (-2.5pts)
 CORR_LOOKBACK = 126
 REGIME_EXPO = 0.25
 COST_BPS = 10.0
-SIGNAL = {"accel": 1.0}
+SIGNAL = {"ret_12_1": 1.0}
+_SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 
 # --- STATUS OF THE SHIPPED SIGNAL -------------------------------------------
 # 2026-07-26: acceleration was falsified on survivorship-free Sharadar data
@@ -48,16 +49,18 @@ SIGNAL = {"accel": 1.0}
 # working product. Replacement is not chosen yet: momentum ranks better but has
 # not yet beaten the index on a RISK-ADJUSTED basis out of sample.
 MODEL_STATUS = {
-    "state": "falsified",
-    "since": "2026-07-26",
-    "headline": "Acceleration does not beat the market on survivorship-free data.",
-    "detail": ("Out of sample (2012-2026) this signal returned 8.3%/yr against "
-               "the S&P's 14.8%, with a -52.8% drawdown vs -22.1%. Its "
-               "cross-sectional edge is +0.27%/rebalance at t=0.4. The forward "
-               "record below continues to accrue as evidence; it is NOT a "
-               "recommendation."),
+    "state": "live",
+    "since": "2026-07-27",
+    "headline": "New model live: 12-1 momentum, large caps, regime-gated.",
+    "detail": ("Acceleration was retired on 2026-07-27 after it was falsified on "
+               "survivorship-free data -- it returned 7.9%/yr against the S&P's "
+               "8.6% over the full period. The replacement ranks large caps by "
+               "12-1 momentum. Backtest, net of 10bps, 1999-2026: 22.1%/yr vs "
+               "8.6%, Sharpe 0.82 vs 0.53, max drawdown -47% vs -55%. That is a "
+               "BACKTEST. The forward record below starts today at these "
+               "parameters and is the only out-of-sample evidence."),
 }
-GROWTH_MIX = 0.75                   # default mirrors the product (EDGE_SPEC growth_mix)
+GROWTH_MIX = 0.0                    # retired with accel (ranked NEGATIVELY)
 GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
 
 SNAPSHOT_PATH = os.path.join("data", "cache", "edge_tracker.json")
@@ -522,7 +525,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             "spec": {
                 "hold_days": hold, "n": n, "mcap_floor_bn": MCAP_FLOOR / 1e9,
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
-                "cost_bps": COST_BPS, "signal": "acceleration (3m-prior3m)",
+                "cost_bps": COST_BPS, "signal": _SIGNAL_LABEL,
                 "growth_mix": mix, "growth_thresh": GROWTH_THRESH,
             },
             "model_status": MODEL_STATUS,

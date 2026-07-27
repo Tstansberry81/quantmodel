@@ -489,23 +489,48 @@ def _bench_fwd_hold(series, d, hold):
 
 
 # ---- the robust, tradeable Edge: signal + liquidity + corr-cap + regime + costs
-EDGE_SPEC = dict(signal={"accel": 1.0}, hold=42, n=10, mcap_floor=2e9,
-                 corr_cap=0.50, corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
-                 growth_mix=0.75,          # fraction of the basket drawn from the >=15%-rev-growth pool
-                 growth_thresh=0.15,       # YoY revenue-growth bar that defines a "growth" name
-                 stagger=True,             # two sleeves offset by half a period (removes rebalance-
-                                           # date luck); performance measured on the DAILY curve so
-                                           # maxDD reflects true intra-period peak-to-trough.
-                 continuous_regime=True)   # evaluate the 200dMA de-risk DAILY across the hold window
-                                           # (not frozen at rebalance). Robust drawdown reducer -- helps
-                                           # or ties in every crisis, tied Sharpe (2026-07 research);
-                                           # catches fast intra-window crashes a per-rebalance regime
-                                           # rides through (e.g. COVID-2020: -34% -> -26% at n=10).
-
+EDGE_SPEC = dict(
+    # 2026-07-27: acceleration was RETIRED here. On survivorship-free Sharadar
+    # data it ranked the cross-section at +0.27%/rebalance (t=0.4) and returned
+    # -6.4%/yr against the S&P out of sample with a -52.8% drawdown. It is dead
+    # in every size bucket, era, sector and regime tested. What replaced it:
+    signal={"ret_12_1": 1.0},   # 12-1 momentum (Jegadeesh-Titman): 12-month
+                                # return skipping the last month. The strongest
+                                # signal in the scan, and CONDITIONAL -- it works
+                                # in large caps (+3.15%/reb, t=2.6), in uptrends
+                                # (+4.06%, t=2.7) and in high-dispersion sectors,
+                                # which is why the floor and the gate below are
+                                # part of the model rather than decoration.
+    hold=42,                    # 2-month clock. vs 1-month: gives up 1.6pts of
+                                # return for HALF the drawdown (-16% vs -33%)
+                                # and the best Sharpe (0.97 vs 0.88).
+    n=10,                       # the product book. Tighter is worse: n=5 draws
+                                # down -57% and goes negative out of sample.
+    mcap_floor=1e10,            # $10B. Momentum degrades monotonically as the
+                                # floor drops -- at $200M the same model returns
+                                # -14.5%/yr excess. This floor is load-bearing.
+    fcf_screen=False,           # OFF. On the production daily basis the screen
+                                # costs 3.8pts of CAGR and 0.06 Sharpe for no
+                                # drawdown benefit (-46% vs -47%). It looked
+                                # good only on the per-rebalance basis, which
+                                # understated drawdown. Kept implemented for
+                                # research; not shipped.
+    corr_cap=None,              # OFF: it pushes the book away from the highest-
+                                # momentum names, i.e. away from the signal.
+                                # Costs 2.5pts of excess.
+    corr_lookback=126, regime_expo=0.25, cost_bps=10.0,
+    growth_mix=0.0,             # retired with accel: the revenue-growth gate
+                                # ranked NEGATIVELY on honest data (-1.61%/reb,
+                                # t=-2.5, negative in both halves).
+    growth_thresh=0.15,
+    stagger=False,              # OFF: costs 0.8pts; adopted for accel.
+    continuous_regime=False)    # OFF: the daily de-risk buys 3pts of drawdown
+                                # for 2.6pts of return against momentum -- a bad
+                                # trade (Sharpe 0.70 -> 0.76 when removed).
 
 def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, growth_thresh,
                   require_fwd=True, corr_mode="max", sector_neutral=False,
-                  beta_neutral=False):
+                  beta_neutral=False, fcf_screen=False):
     """Build the basket as K growth-gated picks + (n-K) pure-signal picks, where
     K = round(growth_mix * n). growth_mix=0 -> pure signal; 1 -> all-growth.
 
@@ -522,6 +547,13 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
         f = _scorable(frame, require_fwd)
         f["_c"] = neutralize(score(f, weights), f, sector_neutral, beta_neutral)
         return list(f.sort_values("_c", ascending=False).head(k)["company_key"])
+    if fcf_screen and "fcf_margin" in d.columns:
+        # Halve the pool on cash generation BEFORE ranking. Applied here so it
+        # binds identically for the backtest and the live book.
+        _m = pd.to_numeric(d["fcf_margin"], errors="coerce")
+        _keep = (_m >= _m.median()).fillna(False)
+        if _keep.sum() >= max(n * 2, 20):
+            d = d[_keep]
     K = int(round(growth_mix * n))
     gpick = []
     if K > 0:
@@ -544,7 +576,7 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
 # Entries are small (a handful of ~250-float arrays), so this costs ~MBs.
 @lru_cache(maxsize=160)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
-               signal_key, growth_mix=0.0, growth_thresh=0.15):
+               signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False):
     """Compute the full-history Edge once (cached). Returns the per-period gross
     & net returns, turnover, and aligned S&P / Nasdaq returns.
 
@@ -556,7 +588,7 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
     for i, df in enumerate(pan.panels):
         d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
-                            growth_mix, growth_thresh)
+                            growth_mix, growth_thresh, fcf_screen=fcf_screen)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur; holds.append(cks)
@@ -572,13 +604,13 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
 
 # ---- daily buy-and-hold simulation + staggered sleeves ----------------------
 def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
-                  growth_mix, growth_thresh):
+                  growth_mix, growth_thresh, fcf_screen=False):
     """Full-spec per-rebalance selection + membership turnover for one panel."""
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
         d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
-                            growth_mix, growth_thresh)
+                            growth_mix, growth_thresh, fcf_screen=fcf_screen)
         cur = set(cks)
         turn.append(1 - len(cur & prev) / len(cur) if prev and cur else (1.0 if cur else 0.0))
         prev = cur; holds.append(cks)
@@ -587,14 +619,15 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
 
 @lru_cache(maxsize=64)
 def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
-                         corr_lookback, growth_mix, growth_thresh):
+                         corr_lookback, growth_mix, growth_thresh, fcf_screen=False):
     """Selection is the SAME for the net and gross backtest passes (cost doesn't
     change which names are picked), and it's the dominant cost (~8s/sleeve via the
     correlation cap). Cache it on the hashable spec so the gross pass — and repeat
     backtests at a different cost/window — reuse it instead of re-selecting."""
     pan = load_edge_panel(hold=hold, offset_days=offset_days)
     holds, turn = _select_holds(pan, n, dict(signal_key), mcap_floor, corr_cap,
-                                corr_lookback, growth_mix, growth_thresh)
+                                corr_lookback, growth_mix, growth_thresh,
+                                fcf_screen=fcf_screen)
     return pan, holds, turn
 
 
@@ -653,7 +686,8 @@ def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, regime_daily
 
 @lru_cache(maxsize=16)
 def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
-                signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False):
+                signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False,
+                fcf_screen=False):
     """Daily NET return series for the tradeable Edge (staggered sleeves when
     stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
     the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough.
@@ -667,7 +701,8 @@ def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_
     series, turns, prim_holds = [], [], None
     for off in offsets:
         pan, holds, turn = _select_holds_cached(hold, off, n, signal_key, mcap_floor,
-                                                corr_cap, corr_lookback, growth_mix, growth_thresh)
+                                                corr_cap, corr_lookback, growth_mix,
+                                                growth_thresh, fcf_screen)
         series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:
@@ -713,6 +748,22 @@ def reset_caches() -> None:
         fn.cache_clear()
 
 
+_SIGNAL_LABELS = {
+    "ret_12_1": "12-1 momentum (12-month return, skipping the last month)",
+    "ret_126": "6-month momentum", "ret_63": "3-month momentum",
+    "ret_21": "1-month reversal", "accel": "acceleration (3m − prior 3m)",
+    "hi_252": "52-week-high proximity", "rs_63": "relative strength vs the market",
+}
+
+
+def _signal_label(signal_key) -> str:
+    """Human label for whatever is ACTUALLY being traded. This was hardcoded to
+    "acceleration" and kept saying so after the signal changed -- the page would
+    have described a model that is no longer running."""
+    parts = dict(signal_key) if not isinstance(signal_key, dict) else signal_key
+    return " + ".join(_SIGNAL_LABELS.get(k, k) for k in parts) or "unknown"
+
+
 def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     """Backtest the tradeable Edge over a trailing window. Returns curves +
     performance in the same shape the website's chart code expects (NET of costs)."""
@@ -722,12 +773,14 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     sig = tuple(sorted(s["signal"].items()))
     gm = float(s.get("growth_mix", 0.0) or 0.0); gt = float(s.get("growth_thresh", 0.15))
     cr = bool(s.get("continuous_regime", False))
+    fs = bool(s.get("fcf_screen", False))
     idx, model, spx, ndx, avg_to, prim = _edge_daily(
         hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
-        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr)
+        s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr, fs)
     # gross (cost-free) daily model, for the gross->net turnover card
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
-                                   s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt, stagger, cr)
+                                   s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt,
+                                   stagger, cr, fs)
     T = len(model)
     k = window_k(window, T)
     if k < 20:
@@ -777,7 +830,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
         "ok": True, "n_rebalances": int(k / hold),
         "period": [str(dts[0].date()), str(dts[-1].date())],
         "period_detail": period_detail,
-        "spec": {"signal": "acceleration (3m−prior3m)", "hold_days": hold,
+        "spec": {"signal": _signal_label(sig), "hold_days": hold,
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
                  "cost_bps": s["cost_bps"], "stagger": stagger,
