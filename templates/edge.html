@@ -36,13 +36,15 @@
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Growth mix:</label>
   <div class="btnrow" id="mixbtns">
-    <button data-m="0">Off</button>
+    <button data-m="0" class="active">Off</button>
     <button data-m="0.25">25%</button>
     <button data-m="0.5">50%</button>
-    <button data-m="0.75" class="active">75%</button>
+    <button data-m="0.75">75%</button>
     <button data-m="1">100%</button>
   </div>
-  <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
+  <span class="small">RETIRED — kept for exploration only. On survivorship-free data the
+  revenue-growth gate ranked <b>negatively</b> (−1.61%/rebalance, t=−2.5, negative in both halves
+  of the sample), so the shipped model runs it Off.</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Basket size:</label>
@@ -54,7 +56,8 @@
     <button data-n="9">9</button>
     <button data-n="10" class="active">10</button>
   </div>
-  <span class="small">number of stocks held (product = 10 · research favors 7, paper-tracked)</span>
+  <span class="small">number of stocks held. The product is 10: tighter books scored better
+  in-sample and then fell apart out of sample (n=5 drew down −57%).</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Amount invested:</label>

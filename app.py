@@ -106,9 +106,9 @@ _EDGE_NS = set(range(5, 11))                # basket-size selector: 5..10 stocks
 # monopolise the single worker. Generous enough that real UI clicking never trips it.
 _bt_hits: dict[str, list] = defaultdict(list)
 _BT_RATE, _BT_WINDOW = 30, 60               # 30 requests / minute / IP
-# The PRODUCT stays a 10-stock book (edge_lib.EDGE_SPEC / edge_tracker_lib.N);
-# the selector is for exploration. n=7 is the research candidate (2026-07 signal
-# hunt) and is paper-tracked forward alongside the product in the tracker.
+# The PRODUCT is a 10-stock book (edge_lib.EDGE_SPEC / edge_tracker_lib.N); the
+# selector is for exploration only. Tighter baskets scored better in-sample and
+# then failed out of sample (n=5: -57% drawdown), so 10 is the shipped size.
 
 
 def _safe(fn):
@@ -140,7 +140,7 @@ def _warm_caches():
     import time as _t
     t0 = _t.time()
     try:
-        _cached_edge_backtest("MAX", 42, 0.75, 10)          # the default /edge view
+        _cached_edge_backtest("MAX", 42, 0.0, 10)           # the default /edge view
         edge_tracker_lib.tracker_state()                    # tracker shares the panels
         app.logger.info("cache warm done in %.0fs", _t.time() - t0)
     except Exception:
@@ -177,11 +177,12 @@ def api_edge_backtest():
     if hold not in _EDGE_HOLDS:
         hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
     try:
-        mix = round(float(body.get("mix", 0.75)), 2)
+        mix = round(float(body.get("mix", 0.0)), 2)
     except (TypeError, ValueError):
-        mix = 0.75
+        mix = 0.0
     if mix not in _EDGE_MIXES:
-        mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
+        mix = 0.0        # RETIRED gate -- default OFF (ranked negatively on
+                         # survivorship-free data); selectable for exploration only
     n = _parse_n(body.get("n", 10))
     return _safe(lambda: _cached_edge_backtest(window, hold, mix, n))
 
@@ -205,11 +206,12 @@ def api_edge_tracker():
     if window not in _edge_windows():
         window = "MAX"
     try:
-        mix = round(float(request.args.get("mix", 0.75)), 2)
+        mix = round(float(request.args.get("mix", 0.0)), 2)
     except (TypeError, ValueError):
-        mix = 0.75
+        mix = 0.0
     if mix not in _EDGE_MIXES:
-        mix = 0.75                               # growth-mix: fraction of basket from >=15% growth pool
+        mix = 0.0        # RETIRED gate -- default OFF (ranked negatively on
+                         # survivorship-free data); selectable for exploration only
     n = _parse_n(request.args.get("n", 10))
     return _safe(lambda: _cached_tracker(hold, window, mix, n))
 
@@ -235,11 +237,11 @@ def api_sync_vision():
     if hold not in _EDGE_HOLDS:
         hold = 21
     try:
-        mix = round(float(body.get("mix", 0.75)), 2)
+        mix = round(float(body.get("mix", 0.0)), 2)
     except (TypeError, ValueError):
-        mix = 0.75
+        mix = 0.0
     if mix not in _EDGE_MIXES:
-        mix = 0.75
+        mix = 0.0        # retired gate: default OFF
     return _safe(lambda: export_vision.export_to_vision(window=window, hold=hold, mix=mix))
 
 

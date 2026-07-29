@@ -17,7 +17,7 @@ async function safeJson(r) {
 // Both pages read/write the same four controls from localStorage so a setting
 // picked on one page carries over to the other.
 const EDGE_OPTS_KEY = 'edgeOpts';
-const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, mix: 0.75, n: 10 };
+const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, mix: 0.0, n: 10 };
 
 function loadEdgeOpts() {
   try {
