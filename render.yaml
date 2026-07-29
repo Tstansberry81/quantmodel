@@ -16,7 +16,22 @@ services:
     # (the work is CPU-bound anyway). Throughput comes from the caches, not concurrency.
     startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 240"
     healthCheckPath: /api/meta
+    # PERSISTENT DISK -- holds the paper-trading forward record.
+    # Render's filesystem is ephemeral without this. The record is not in git
+    # (it accrues on the host) and not in the data bundle (which is rebuilt from
+    # research and would overwrite it), so before this disk every deploy silently
+    # reset the only out-of-sample evidence the model has -- while the page kept
+    # presenting it as a forward record. 1GB is far more than a JSON log needs;
+    # it is the smallest size Render sells.
+    # NOTE: a service with a disk cannot scale past one instance. Already true
+    # here (workers 1, see startCommand), so this costs nothing.
+    disk:
+      name: tracker-state
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
+      - key: EDGE_TRACKER_PATH
+        value: /var/data/edge_tracker.json
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
       # pit_universe auto-detects, and now that the artifact reports
       # source=sharadar the SharadarAdapter activates -- so production would

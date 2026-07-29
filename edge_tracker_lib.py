@@ -68,7 +68,20 @@ MODEL_STATUS = {
 GROWTH_MIX = 0.0                    # retired with accel (ranked NEGATIVELY)
 GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
 
-SNAPSHOT_PATH = os.path.join("data", "cache", "edge_tracker.json")
+# WHERE THE FORWARD RECORD LIVES.
+#
+# This file is the ONLY out-of-sample evidence the model has -- every other
+# number on the site is a backtest. It is deliberately not in git (it accrues on
+# whatever host is running) and not in the data bundle (the bundle is rebuilt
+# from research and would overwrite it).
+#
+# That combination means the default path below is only durable if the host's
+# filesystem is. On an ephemeral host it silently resets on every deploy, and a
+# record that restarts without saying so is WORSE than no record: the page keeps
+# presenting it as forward evidence. Point EDGE_TRACKER_PATH at a persistent
+# volume in that case (render.yaml mounts one at /var/data).
+SNAPSHOT_PATH = os.environ.get(
+    "EDGE_TRACKER_PATH", os.path.join("data", "cache", "edge_tracker.json"))
 
 # --- GP/assets quality-gate research sleeve (2026-07 fundamental campaign) -----
 # Paper-tracked forward ALONGSIDE the product + n=7 books. Overlay = the accel
