@@ -232,26 +232,24 @@ def api_meta():
 
 @app.post("/api/sync_vision")
 def api_sync_vision():
-    """Push the CURRENT backtest settings (window / rebalance clock / growth mix,
-    10-stock book) to the Vision product via the export pipeline + a GitHub commit
-    (falls back to a local write with no GITHUB_TOKEN)."""
+    """Push the CURRENT backtest settings (window / rebalance clock, 10-stock book)
+    to the Vision product via the export pipeline + a GitHub commit (falls back to
+    a local write with no GITHUB_TOKEN)."""
     body = request.get_json(silent=True) or {}
     window = (body.get("window", "2Y") or "2Y").upper()
     if window not in _edge_windows():
         window = "2Y"
+    # Default to the SHIPPED clock, not 21. Defaulting to a hold the product does
+    # not use meant a sync with no explicit hold published a different model to a
+    # public site (the growth-mix argument, now removed, did the same).
+    _default_hold = edge_lib.EDGE_SPEC["hold"]
     try:
-        hold = int(body.get("hold", 21))
+        hold = int(body.get("hold", _default_hold))
     except (TypeError, ValueError):
-        hold = 21
+        hold = _default_hold
     if hold not in _EDGE_HOLDS:
-        hold = 21
-    try:
-        mix = round(float(body.get("mix", 0.0)), 2)
-    except (TypeError, ValueError):
-        mix = 0.0
-    if mix not in _EDGE_MIXES:
-        mix = 0.0        # retired gate: default OFF
-    return _safe(lambda: export_vision.export_to_vision(window=window, hold=hold, mix=mix))
+        hold = _default_hold
+    return _safe(lambda: export_vision.export_to_vision(window=window, hold=hold))
 
 
 # ---- in-app chat assistant ("explain the numbers on screen") ----------------

@@ -6,8 +6,8 @@ output. This builds Vision's data file — the current 10-stock book + a primary
 backtest curve + a 20-year track-record curve (each vs S&P) + headline stats.
 
 Two ways to run it:
-  * CLI:  python export_vision.py [--window 2Y --hold 21 --mix 0.75]  (writes local)
-  * In-app "Sync to Vision" button -> export_to_vision(window, hold, mix), which
+  * CLI:  python export_vision.py [--window 2Y --hold 42]  (writes local)
+  * In-app "Sync to Vision" button -> export_to_vision(window, hold), which
     pushes vision_data.js to the Vision GitHub repo (GITHUB_TOKEN) so Render
     auto-redeploys. With no token (dev) it falls back to writing the local file.
 
@@ -25,8 +25,13 @@ import edge_lib
 import edge_tracker_lib
 
 WINDOW = "2Y"          # default primary backtest curve (must be in edge_lib.WINDOWS)
-HOLD = 21              # default 1-month rebalance clock
-MIX = 0.75            # default 75% YoY-revenue-growth mix
+# DERIVED from the shipped spec, never hardcoded. These used to read HOLD = 21
+# and MIX = 0.75 -- a 1-month clock the model does not use, and the revenue-growth
+# gate that was RETIRED for ranking negatively. The public Vision site was
+# therefore advertising a different model from the one running, with numbers from
+# the pre-Sharadar survivorship-biased panel. Deriving from EDGE_SPEC means the
+# export cannot drift from the product again (RESEARCH_RULES #7).
+HOLD = edge_lib.EDGE_SPEC["hold"]
 LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the primary
 # The per-window summary stats ride along in the export via bt["windows"],
 # regardless of which WINDOW drives the headline curve above.
@@ -42,31 +47,40 @@ for _w in (WINDOW, LONG_WINDOW):
         raise ValueError(f"export window {_w!r} is not in edge_lib.WINDOWS {edge_lib.WINDOWS}")
 
 
-def build(window: str = WINDOW, hold: int = HOLD, mix: float = MIX) -> dict:
-    """Build Vision's data payload at the given window / rebalance clock / mix.
-    The 20-year track-record curve uses the same clock + mix, window=20Y."""
-    bt = edge_lib.run_edge_backtest(window=window, spec={"hold": hold, "growth_mix": mix})
+def build(window: str = WINDOW, hold: int = HOLD) -> dict:
+    """Build Vision's data payload at the given window / rebalance clock.
+    The 20-year track-record curve uses the same clock, window=20Y."""
+    bt = edge_lib.run_edge_backtest(window=window, spec={"hold": hold})
     if not bt.get("ok"):
         raise RuntimeError(f"backtest failed: {bt.get('reason')}")
-    lt = edge_lib.run_edge_backtest(window=LONG_WINDOW, spec={"hold": hold, "growth_mix": mix})
+    lt = edge_lib.run_edge_backtest(window=LONG_WINDOW, spec={"hold": hold})
     if not lt.get("ok"):
         raise RuntimeError(f"long backtest failed: {lt.get('reason')}")
-    tr = edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix)
+    tr = edge_tracker_lib.tracker_state(hold=hold, window=window)
     if not tr.get("ok"):
         raise RuntimeError(f"tracker failed: {tr.get('reason')}")
 
     perf = bt["performance"]["model"]
     lperf = lt["performance"]["model"]
+    spec = bt["spec"]
+    # `signal`, not `accel`: the book key was renamed when acceleration was
+    # retired, and reading the old name published a null for every holding.
     book = [{
         "ticker": b["ticker"], "name": b["name"], "sector": b["sector"],
-        "weight": b["weight"], "accel": b.get("accel"), "price": b.get("price"),
+        "weight": b["weight"], "signal": b.get("signal"),
+        "signal_col": b.get("signal_col"), "price": b.get("price"),
     } for b in tr["current_book"]]
 
     return {
         "product": "Vision",
         "config": {"window": window, "rebalance": _REBAL_LABEL.get(hold, f"{hold}d"),
-                   "hold_days": hold, "growth_mix": mix, "n": len(book),
-                   "cost_bps": bt["spec"].get("cost_bps", 10)},
+                   "hold_days": hold, "n": len(book),
+                   "signal": spec.get("signal"),
+                   "mcap_floor_bn": spec.get("mcap_floor_bn"),
+                   "sector_cap": spec.get("sector_cap"),
+                   "continuous_regime": spec.get("continuous_regime"),
+                   "vol_target": spec.get("vol_target"),
+                   "cost_bps": spec.get("cost_bps", 10)},
         "as_of": tr["book_date"],
         "book_date": tr["book_date"],
         "book": book,
@@ -129,15 +143,15 @@ def push_to_github(payload: str, message: str) -> dict:
             "repo": repo, "branch": branch}
 
 
-def export_to_vision(window: str = WINDOW, hold: int = HOLD, mix: float = MIX,
+def export_to_vision(window: str = WINDOW, hold: int = HOLD,
                      actor: str | None = None) -> dict:
     """Build + publish. Pushes to the Vision repo if GITHUB_TOKEN is set (Render then
     auto-redeploys), else writes the local file (dev). JSON-friendly result."""
-    data = build(window, hold, mix)
+    data = build(window, hold)
     pj = payload_js(data)
     cfg = data["config"]
     msg = (f"Sync Vision — {cfg['window']} / {cfg['rebalance']} / "
-           f"{int(round(cfg['growth_mix']*100))}% mix / {cfg['n']} stocks"
+           f"{cfg['n']} stocks / {cfg.get('signal', '?')}"
            + (f" (by {actor})" if actor else ""))
     if os.environ.get("GITHUB_TOKEN"):
         res = push_to_github(pj, msg)
@@ -158,14 +172,13 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--window", default=WINDOW)
     ap.add_argument("--hold", type=int, default=HOLD)
-    ap.add_argument("--mix", type=float, default=MIX)
     args = ap.parse_args()
 
-    data = build(args.window, args.hold, args.mix)
+    data = build(args.window, args.hold)
     out = write_local(payload_js(data), args.out)
     print(f"Wrote {out}")
     print(f"  {data['config']['window']} / {data['config']['rebalance']} / "
-          f"{int(round(data['config']['growth_mix']*100))}% mix · as of {data['as_of']} · "
+          f"as of {data['as_of']} · "
           f"CAGR {data['performance']['cagr']*100:.1f}% / Sharpe {data['performance']['sharpe']:.2f}")
     print(f"  book: {', '.join(b['ticker'] for b in data['book'])}")
 
