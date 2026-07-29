@@ -19,7 +19,10 @@ import json
 import json as _json
 import os
 import pathlib
+import shutil
 import sys
+import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -96,6 +99,51 @@ if _live.exists():
           f"${DEPLOY_MCAP_KEEP/1e9:.0f}B "
           f"({_live.stat().st_size/1e6:.0f}MB -> {_trimmed.stat().st_size/1e6:.0f}MB)")
 
+# ---- precompute the panel the host would otherwise build on every cold start --
+# Building it costs ~16s here and 3-4x that on a small cloud instance, which is
+# what pushed the first backtest past the reverse proxy's ~100s timeout (a 502
+# on a perfectly healthy app). Ship it prebuilt instead.
+#
+# It MUST be built against the TRIMMED artifact and the REWRITTEN meta.json,
+# because edge_lib fingerprints both. Build it against the full local artifact
+# and every fingerprint check on the host misses -- shipping a 64MB file that is
+# silently never used, with no error to tell you. So: swap the trimmed files in,
+# build, swap back. try/finally, because leaving the developer's full artifact
+# replaced by the deploy-trimmed one would be a nasty parting gift.
+_meta_bytes = None
+if _trimmed is not None:
+    _mp = config.ARTIFACT_DIR / "meta.json"
+    _mj = _json.loads(_mp.read_text(encoding="utf-8"))
+    _mj["n_names"] = _mj["universe_size"] = len(_keep)
+    _mj["deploy_trim_mcap"] = DEPLOY_MCAP_KEEP
+    _meta_bytes = _json.dumps(_mj).encode()
+
+_panels: list[pathlib.Path] = []
+if os.environ.get("SKIP_PANEL_PRECOMPUTE") != "1":
+    _live_art = config.ARTIFACT_DIR / "backtest_data.pkl"
+    _mp = config.ARTIFACT_DIR / "meta.json"
+    _bak_art = _bak_meta = None
+    try:
+        if _trimmed is not None:
+            _bak_art = pathlib.Path(tempfile.mkstemp(suffix=".pkl")[1])
+            shutil.copy(_live_art, _bak_art); shutil.copy(_trimmed, _live_art)
+            _bak_meta = _mp.read_bytes(); _mp.write_bytes(_meta_bytes)
+
+        import edge_lib as E
+        E.reset_caches()
+        for _pth in sorted(config.CACHE_DIR.glob("panel_h*.pkl")):
+            _pth.unlink()          # never ship a panel from a previous artifact
+        _t0 = time.time()
+        E.load_edge_panel(hold=E.EDGE_SPEC["hold"], universe=E.UNIVERSE, offset_days=0)
+        _panels = sorted(config.CACHE_DIR.glob("panel_h*.pkl"))
+        print(f"precomputed panel: {', '.join(p.name for p in _panels)} "
+              f"({sum(p.stat().st_size for p in _panels)/1e6:.0f}MB, {time.time()-_t0:.0f}s)")
+    finally:
+        if _bak_art is not None:
+            shutil.copy(_bak_art, _live_art); _bak_art.unlink()
+        if _bak_meta is not None:
+            _mp.write_bytes(_bak_meta)
+
 n = 0
 with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
     # the model artifacts (factor snapshot + the backtest panel pickle)
@@ -105,18 +153,19 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         if p.name == "backtest_data.pkl" and _trimmed is not None:
             z.write(_trimmed, p.relative_to(config.ROOT)); n += 1
             continue
-        if p.name == "meta.json" and _trimmed is not None:
+        if p.name == "meta.json" and _meta_bytes is not None:
             # Rewrite the count to match what actually ships. Copying the
             # untrimmed meta made the live footer claim 12,164 names for a
             # bundle carrying 2,976 -- a number the deployed site displays.
-            _mj = _json.loads(p.read_text(encoding="utf-8"))
-            _mj["n_names"] = _mj["universe_size"] = len(_keep)
-            _mj["deploy_trim_mcap"] = DEPLOY_MCAP_KEEP
-            z.writestr(str(p.relative_to(config.ROOT)), _json.dumps(_mj)); n += 1
+            # Same bytes the panel was fingerprinted against, or the host misses.
+            z.writestr(str(p.relative_to(config.ROOT)), _meta_bytes.decode()); n += 1
             continue
         z.write(p, p.relative_to(config.ROOT)); n += 1
     # cached yfinance benchmarks/gold (yf_*.pkl) so charts work without live calls
     for p in sorted(config.CACHE_DIR.glob("yf_*.pkl")):
+        z.write(p, p.relative_to(config.ROOT)); n += 1
+    # prebuilt panel(s): the whole point of the cold-start fix
+    for p in _panels:
         z.write(p, p.relative_to(config.ROOT)); n += 1
 
 if _trimmed is not None and _trimmed.exists():

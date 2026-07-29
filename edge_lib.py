@@ -18,10 +18,16 @@ from __future__ import annotations
 import warnings; warnings.filterwarnings("ignore")
 from functools import lru_cache
 import numpy as np, pandas as pd
+import hashlib
+import logging
 import os
+import pathlib
+import pickle
 import config
 import edge_data as D                # self-contained Edge data layer (no Slow Burn deps)
 import pit_universe as PIT           # pluggable PIT Russell-1000 universe layer
+
+log = logging.getLogger(__name__)
 
 # Restrict each rebalance to REAL point-in-time Russell-1000 members (and price
 # delisted names) when a real PIT source is present, instead of the survivorship-
@@ -97,10 +103,11 @@ class EdgePanel:
         self.live_spx_todate = live_spx_todate    # S&P return since live_date
 
 
-@lru_cache(maxsize=10)
-def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0) -> EdgePanel:
+def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
     """Build the trading panel once. Each row = one candidate's short-horizon
-    market-data signals + forward return. NO fundamentals."""
+    market-data signals + forward return. NO fundamentals.
+
+    Call load_edge_panel() instead: it adds the memo + disk cache around this."""
     data = D.load_bt_data(); bm = D.benchmarks()
     spx = bm["SP500"].dropna(); mret_full = spx.pct_change()
     ndx = bm["NASDAQ"].dropna()
@@ -263,6 +270,71 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                      np.array(ma200_on, bool), mret_full, sectors, hold,
                      live_panel=live_rows, live_date=live_date,
                      live_regime_on=live_regime_on, live_spx_todate=live_spx_todate)
+
+
+# ---- panel disk cache -------------------------------------------------------
+# Building a panel costs ~16s on a fast laptop and 3-4x that on a small cloud
+# instance -- enough, on a cold start, to blow through a reverse proxy's ~100s
+# request timeout before the first backtest returns a byte. The panel is a pure
+# function of (artifact, code, knobs), so it is precomputed at bundle time and
+# shipped; the host unpickles instead of rebuilding.
+#
+# A stale panel would be the worst kind of bug: right-looking numbers from the
+# wrong data, silently (RESEARCH_RULES #5 -- caches are part of the answer). So
+# the cache is FINGERPRINTED and a miss rebuilds rather than guesses. The
+# fingerprint hashes this whole source file, not a hand-maintained version
+# constant: "bump the version when you change the builder" is a rule that gets
+# forgotten exactly once and then lies forever. Hashing the file over-
+# invalidates (an unrelated edit rebuilds too) -- the cheap direction to err.
+def _panel_fingerprint(hold: int, universe: int, offset_days: int) -> str:
+    h = hashlib.sha256()
+    h.update(pathlib.Path(__file__).read_bytes())          # the builder itself
+    art = config.ARTIFACT_DIR / "backtest_data.pkl"        # the data it reads
+    if art.exists():
+        st = art.stat()
+        h.update(f"{st.st_size}".encode())
+    meta = config.ARTIFACT_DIR / "meta.json"
+    if meta.exists():
+        h.update(meta.read_bytes())
+    # module-level research knobs: NOT function args, so they must be hashed in
+    # or flipping one would reuse the other variant's panel.
+    h.update(repr((hold, universe, offset_days, LB,
+                   USE_PIT_UNIVERSE, DELIST_HAIRCUT)).encode())
+    return h.hexdigest()[:16]
+
+
+def _panel_cache_path(hold: int, universe: int, offset_days: int) -> pathlib.Path:
+    return config.CACHE_DIR / f"panel_h{hold}_u{universe}_o{offset_days}.pkl"
+
+
+@lru_cache(maxsize=10)
+def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0) -> EdgePanel:
+    """Memoized panel: RAM -> disk -> build. See _panel_fingerprint for why a
+    disk hit is only trusted when the fingerprint matches exactly."""
+    want = _panel_fingerprint(hold, universe, offset_days)
+    path = _panel_cache_path(hold, universe, offset_days)
+    if path.exists():
+        try:
+            with open(path, "rb") as fh:
+                blob = pickle.load(fh)
+            if blob.get("fingerprint") == want:
+                return blob["panel"]
+            log.info("panel cache %s is stale (data or code changed); rebuilding",
+                     path.name)
+        except Exception:
+            # A corrupt or cross-version pickle must never be fatal: the whole
+            # point of this cache is speed, and rebuilding always works.
+            log.warning("panel cache %s unreadable; rebuilding", path.name, exc_info=True)
+
+    panel = _build_edge_panel(hold, universe, offset_days)
+    try:
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "wb") as fh:
+            pickle.dump({"fingerprint": want, "panel": panel}, fh, protocol=4)
+        tmp.replace(path)      # atomic: a reader never sees a half-written panel
+    except Exception:
+        log.warning("could not write panel cache %s", path.name, exc_info=True)
+    return panel
 
 
 # ---- ranking + selection ----------------------------------------------------
@@ -785,7 +857,11 @@ def reset_caches() -> None:
     silently returns the PREVIOUS variant's numbers -- a wrong research result
     with no error. Clearing load_edge_panel alone is not enough; the selection
     and daily-series caches sit above it and would still be warm.
-    (_ma200_daily_state is not cleared: it depends only on the S&P calendar.)"""
+    (_ma200_daily_state is not cleared: it depends only on the S&P calendar.)
+
+    The on-disk panel cache needs no clearing: USE_PIT_UNIVERSE and
+    DELIST_HAIRCUT are hashed into its fingerprint, so a knob flip misses and
+    rebuilds instead of returning the other variant's panel."""
     for fn in (load_edge_panel, _select_holds_cached, _edge_full, _edge_daily):
         fn.cache_clear()
 
