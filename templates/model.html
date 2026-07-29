@@ -11,85 +11,161 @@
   .eqbox{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:14px 16px;margin:10px 0;overflow-x:auto}
   .katex{font-size:1.04em}
   .live{color:#d4af37;font-weight:600}
+  .plain h3{font-size:15px;margin:18px 0 6px;color:#e6edf3}
+  .plain p,.plain li{color:#c9d1d9;font-size:14px;line-height:1.72}
+  .plain ul{margin:6px 0 6px 18px}
+  .plain .why{color:#8b949e;font-size:13.5px}
+  .warn{background:#3d1d1d;border:1px solid #a33;border-radius:8px;padding:12px 14px;color:#ffb3b3;
+        font-size:13.5px;line-height:1.6;margin:14px 0 2px}
 </style>
 {% endblock %}
 {% block content %}
 <h1>The Model <span class="small">— full specification</span></h1>
-<p class="sub">Every equation behind the Edge, at the live product configuration. The only fundamental input is revenue growth (Step 4); everything else is price. Fundamentals are lagged 90 days so nothing uses future data.</p>
+<p class="sub">Every equation behind the Edge, at the live product configuration. The model is
+<b>price-only</b>: it ranks stocks on their past returns. No fundamentals are used to pick names.</p>
 
 <div class="panel">
   <h2>Product configuration</h2>
   <div class="cards" id="cfg">
-    <div class="stat"><div class="k">Signal</div><div class="v" style="font-size:15px">acceleration</div></div>
+    <div class="stat"><div class="k">Signal</div><div class="v" style="font-size:15px">12-1 momentum</div></div>
     <div class="stat"><div class="k">Holding / clock</div><div class="v" style="font-size:15px">2 months (~42d)</div></div>
     <div class="stat"><div class="k">Basket</div><div class="v" style="font-size:15px">10 names · equal-wt</div></div>
     <div class="stat"><div class="k">Execution</div><div class="v" style="font-size:15px">enter next day (t+1)</div></div>
-    <div class="stat"><div class="k">Sleeves</div><div class="v" style="font-size:15px">two staggered (½-period)</div></div>
-    <div class="stat"><div class="k">Liquidity floor</div><div class="v" style="font-size:15px">≥ $2B mcap</div></div>
-    <div class="stat"><div class="k">Correlation cap</div><div class="v" style="font-size:15px">0.50</div></div>
+    <div class="stat"><div class="k">Liquidity floor</div><div class="v" style="font-size:15px">≥ $10B mcap</div></div>
+    <div class="stat"><div class="k">Sector cap</div><div class="v" style="font-size:15px">max 2 per sector</div></div>
     <div class="stat"><div class="k">Regime (below 200dMA)</div><div class="v" style="font-size:15px">25% invested</div></div>
-    <div class="stat"><div class="k">Growth mix</div><div class="v" style="font-size:15px">75% ≥15% YoY</div></div>
     <div class="stat"><div class="k">Costs</div><div class="v" style="font-size:15px">10 bps / turnover</div></div>
   </div>
 </div>
 
 <div class="panel eqsec">
   <h2><span class="n">1</span> Universe &amp; eligibility</h2>
-  <p class="lead">Each rebalance date \(d\): keep the top-1,000 US names by point-in-time market cap (a Russell-1000 proxy), then apply a tradeable-size floor. \(\delta=90\) days is the fundamentals lag.</p>
-  <div class="eqbox">$$\operatorname{rank}\big[\operatorname{mcap}_i(d-\delta)\big]\le 1000 \quad\text{and}\quad \operatorname{mcap}_i(d-\delta)\ge \$2\text{B}$$</div>
+  <p class="lead">At each rebalance date \(d\), keep US names whose point-in-time market cap clears the
+  size floor. Delisted companies remain in the history and can be held into their delisting.</p>
+  <div class="eqbox">$$\operatorname{mcap}_i(d)\ \ge\ \$10\text{B}$$</div>
 </div>
 
 <div class="panel eqsec">
-  <h2><span class="n">2</span> Signals <span class="small">(market data only)</span></h2>
-  <p class="lead">Price momentum over several horizons; <span class="live">acceleration</span> is the only one the live model scores on — "is momentum speeding up?" \(P_i(t)\) is the total-return adjusted close.</p>
-  <div class="eqbox">$$\text{ret}^{(k)}_i=\frac{P_i(t)}{P_i(t-k)}-1,\qquad k\in\{21,63,126\}$$</div>
-  <div class="eqbox">$$\text{accel}_i=\underbrace{\left[\frac{P_i(t)}{P_i(t-63)}-1\right]}_{\text{last 3 months}}-\underbrace{\left[\frac{P_i(t-63)}{P_i(t-126)}-1\right]}_{\text{prior 3 months}}$$</div>
-  <p class="lead">Also computed but unweighted in the product: \(\text{hi\_252}=P_i(t)/\max_{[t-251,t]}P_i\), relative strength \(\text{rs\_63}=\text{ret}^{(63)}_i-\text{SPX}^{(63)}\), 21-day volatility, and market beta.</p>
+  <h2><span class="n">2</span> Signal <span class="small">(price only)</span></h2>
+  <p class="lead"><span class="live">12-1 momentum</span> — the twelve-month return, <em>skipping the
+  most recent month</em>. \(P_i(t)\) is the split- and dividend-adjusted close.</p>
+  <div class="eqbox">$$\text{mom}_i(t)=\frac{P_i(t-21)}{P_i(t-251)}-1$$</div>
+  <p class="lead">Skipping the last month is deliberate: very recent moves tend to partly reverse, so
+  including them works against the signal.</p>
 </div>
 
 <div class="panel eqsec">
   <h2><span class="n">3</span> Cross-sectional score</h2>
-  <p class="lead">Standardize each signal across all eligible names that day (z-score), then take a weighted blend. The product weights only acceleration.</p>
-  <div class="eqbox">$$z_{c,i}=\frac{x_{c,i}-\mu_c}{\sigma_c},\qquad s_i=\sum_c w_c\,z_{c,i}\;\xrightarrow{\;w=\{\text{accel}:1\}\;}\;\boxed{\,s_i=z(\text{accel}_i)\,}$$</div>
+  <p class="lead">Standardise the signal across all eligible names on that date, so the ranking is
+  relative to the field that day rather than to an absolute return level.</p>
+  <div class="eqbox">$$s_i=\frac{\text{mom}_i-\mu}{\sigma}$$</div>
 </div>
 
 <div class="panel eqsec">
-  <h2><span class="n">4</span> Selection — growth blend + correlation cap</h2>
-  <p class="lead">Split the \(n=10\) slots by the growth mix \(m\): \(K\) names must come from the revenue-growth pool, the rest from anywhere. Both are filled greedily by score, subject to the correlation cap.</p>
-  <div class="eqbox">$$K=\operatorname{round}(m\cdot n)=\operatorname{round}(0.75\times 10)=8,\qquad G=\{\,i:\ g_i(d-\delta)\ge 0.15\,\}$$</div>
-  <p class="lead">Walk candidates best-score first; admit \(i\) into the chosen set \(C\) only if it isn't too correlated with anything already held (Pearson over the trailing 126 daily returns):</p>
-  <div class="eqbox">$$\text{admit } i \iff \max_{j\in C}\big|\rho_{126}(r_i,r_j)\big|\le 0.50$$</div>
-  <p class="lead">Take 8 from \(G\) and 2 from the full eligible set this way (backfill by score if the cap leaves too few). This revenue-growth filter \(g_i\) is the model's <b>only</b> fundamental input.</p>
+  <h2><span class="n">4</span> Selection — top 10, capped by sector</h2>
+  <p class="lead">Walk the ranking best-first, admitting a name only while its sector holds fewer than
+  \(c=2\) names. A 10-name book therefore spans at least five sectors.</p>
+  <div class="eqbox">$$\text{admit } i \iff \#\{j\in B:\ \text{sector}_j=\text{sector}_i\}<c,\qquad |B|=n=10$$</div>
 </div>
 
 <div class="panel eqsec">
   <h2><span class="n">5</span> Execution, weighting &amp; regime overlay</h2>
-  <p class="lead"><b>Execution lag.</b> The signal is formed on the close of day \(t\), but the trade <b>enters on the next close</b> \(t{+}1\) — you can't compute the whole cross-section and also trade the close it was computed from. Positions are then held \(h=42\) trading days (a ~2-month clock), <b>buy-and-hold</b> (weights drift with returns, they are not re-set daily).</p>
-  <div class="eqbox">$$\text{signal from }P_i(t)\;\Rightarrow\;\text{enter }P_i(t{+}1),\quad\text{hold }h=42\text{ days},\quad w_i(t{+}1)=\tfrac{1}{n}$$</div>
-  <p class="lead">The 200-day regime switch cuts exposure to \(\theta=0.25\) (75% to cash, earning the risk-free \(r_f\)) on any day the S&amp;P is below its 200-day average. The state is evaluated <b>daily across the holding window</b> (at the prior close, so it's causal) — not frozen at the rebalance — so a fast intra-window crash de-risks immediately rather than riding it out:</p>
-  <div class="eqbox">$$r_d=\begin{cases}r^{\text{book}}_d & \text{SPX}(d)>\text{MA}_{200}(d)\\[6pt]\theta\,r^{\text{book}}_d+(1-\theta)\,r_f & \text{otherwise}\end{cases}$$</div>
-  <p class="lead"><b>Staggered sleeves.</b> The book is run as <b>two sleeves</b> offset by half a period (\(h/2\approx 21\) days), combined 50/50, so performance doesn't depend on the luck of a single rebalance calendar:</p>
-  <div class="eqbox">$$r^{\text{prod}}_d=\tfrac12\,r^{(\text{sleeve A})}_d+\tfrac12\,r^{(\text{sleeve B, }+h/2)}_d$$</div>
+  <p class="lead">Signals are formed at the close of day \(t\); the trade enters at the close of
+  \(t+1\). Positions are equal-weight. Exposure \(e\) is cut when the S&amp;P is below its 200-day average.</p>
+  <div class="eqbox">$$w_i=\tfrac1n,\qquad
+  e(d)=\begin{cases}1 & \text{S\&P}(d)\ \ge\ \text{MA}_{200}(d)\\[2pt] 0.25 & \text{otherwise}\end{cases}$$</div>
+  <div class="eqbox">$$r_p(d)=e(d)\sum_i w_i\,r_i(d)\;+\;\big(1-e(d)\big)\,r_f$$</div>
 </div>
 
 <div class="panel eqsec">
   <h2><span class="n">6</span> Transaction costs → net return</h2>
-  <p class="lead">Turnover is the fraction of the basket replaced versus last rebalance; cost \(c=10\) bps is charged on it.</p>
-  <div class="eqbox">$$\tau_d=1-\frac{|C_d\cap C_{d-1}|}{|C_d|},\qquad r^{\text{net}}_d=r_d-\frac{c}{10^4}\,\tau_d$$</div>
+  <p class="lead">Turnover \(\tau\) is the share of the book replaced at a rebalance; each unit costs
+  10&nbsp;bps.</p>
+  <div class="eqbox">$$\tau_k=1-\frac{|B_k\cap B_{k-1}|}{|B_k|},\qquad r^{\text{net}}=r^{\text{gross}}-0.0010\,\tau_k$$</div>
 </div>
 
 <div class="panel eqsec">
-  <h2><span class="n">7</span> Equity curve &amp; reported metrics</h2>
-  <p class="lead">Performance is measured on the <b>daily</b> net-return series \(r^{\text{net}}_d\) of the combined staggered book — so the drawdown reflects true intra-period peak-to-trough, not just values sampled every rebalance. Annualize with 252 trading days over \(T\) days.</p>
-  <div class="eqbox">$$\text{eq}_T=\prod_{d=1}^{T}\!\left(1+r^{\text{net}}_d\right),\qquad \text{CAGR}=\text{eq}_T^{\,252/T}-1$$</div>
-  <div class="eqbox">$$\text{Sharpe}=\sqrt{252}\;\frac{\overline{r^{\text{net}}}}{\sigma(r^{\text{net}})},\qquad \text{maxDD}=\min_t\!\left(\frac{\text{eq}_t}{\max_{s\le t}\text{eq}_s}-1\right)$$</div>
-  <p class="lead" style="margin-top:12px"><b>Overfitting-adjusted checks.</b> Across the <b>120</b> configs actually screened, and measured on <b>non-overlapping 42-day periods</b> (the daily series holds each book 42 days, so overlap autocorrelation makes a daily-basis test invalid): the product's excess vs the S&amp;P is significant under Newey-West HAC errors, \(t=+2.17\) (raw \(t=+1.71\)); the Deflated Sharpe Ratio (deflating for the trial count + fat tails) is \(\approx1.00\); and the Probability of Backtest Overfitting sits <b>right on the 0.5 danger line and is not stable</b> — the same test on the same config measured \(0.67\) on one data vintage and \(0.49\) a week later. We therefore treat PBO as <b>inconclusive</b> rather than passing: the honest reading is that the \(n\)/growth-mix dials are not robustly optimizable (near-identical configs, so the selection test cannot identify a persistent winner), which is a caution against dial-mining rather than proof the acceleration signal itself is overfit. Note the shipped config ranks #59 of 120 on composite score — it is a fixed economic choice, not the in-sample winner. For transparency, the same tests on the statistically invalid daily basis read weaker still (\(t=+1.56\), PBO \(0.63\)).</p>
+  <h2><span class="n">7</span> Reported metrics</h2>
+  <p class="lead">Measured on the <b>daily</b> equity curve, so drawdown is the true intra-period
+  peak-to-trough rather than a sampled approximation.</p>
+  <div class="eqbox">$$\text{CAGR}=E_T^{252/T}-1,\quad
+  \text{Sharpe}=\frac{\sqrt{252}\,\bar r}{\sigma_r},\quad
+  \text{maxDD}=\min_t\!\left(\frac{E_t}{\max_{u\le t}E_u}-1\right)$$</div>
 </div>
 
-<div class="panel">
-  <h2>In one sentence</h2>
-  <p class="small" style="line-height:1.6">Each rebalance, take the top-1,000 large-caps above $2B, rank them by acceleration (z-scored), fill 8 slots from ≥15%-revenue-growth names and 2 from anywhere — each admitted only if &lt;0.50 correlated with names already in the book — enter the next day and hold equal-weight for ~2 months, run as two half-period-staggered sleeves, cut to 25% invested on any day (checked daily) the S&amp;P is below its 200-day average, and net out 10&nbsp;bps of turnover cost.</p>
-  <p class="small" style="line-height:1.6;color:#8b949e;margin-top:10px"><b>Honest caveat:</b> the absolute backtest CAGR is optimistic — the universe is missing ~89% of delisted names (survivorship), the liquidity floor uses market cap as a full-history proxy, and the recent window has been momentum-friendly. Survivorship remains <b>an open question, not a cleared one</b>: a rebuild on Norgate's real point-in-time Russell&nbsp;1000 (every constituent as of each date, including the 50 that later delisted, priced through their delisting) is <b>inconclusive over the 2-year data trial</b>. Run on the shipped basis, that window holds only ~9 rebalances per sleeve, and the outcome is dominated by calendar phase: single-sleeve CAGR spans <b>−2% to +55%</b> across start offsets, with a median (~17%) at roughly the S&amp;P's ~19% and only half of offsets beating it. The noise is far larger than the survivorship effect being measured, so this window cannot confirm or refute the bias — a full-history point-in-time dataset is required. Drawdowns are now measured daily (true intra-period, ~−26% vs the S&amp;P −55%, with the 200dMA de-risk evaluated daily), and staggering removes the calendar luck a single sleeve carried. Trust the risk-adjusted shape (Sharpe ≈0.9, drawdown control) over the headline return; ~70% of it is buyable factor premium, not proprietary alpha.</p>
+<div class="panel plain">
+  <h2>In plain English</h2>
+
+  <h3>What the model is trying to do</h3>
+  <p>It bets that <b>stocks which have risen over the past year tend to keep rising for a while.</b>
+  That pattern is called momentum and it is one of the most studied effects in finance. The model reads
+  no news, earnings reports or opinions — only past prices.</p>
+
+  <h3>What it does, step by step</h3>
+  <ul>
+    <li><b>Start with big companies only.</b> Each must be worth at least $10 billion. Smaller companies
+      were tested and the strategy got steadily worse the further down it went, so the size floor is part
+      of the model rather than a convenience.</li>
+    <li><b>Measure each one's past year of returns, ignoring the most recent month.</b></li>
+    <li><b>Rank them against each other</b> on that date. What matters is beating the other candidates
+      that day, not clearing a fixed number.</li>
+    <li><b>Buy the top 10 — but never more than 2 from the same sector.</b> Without that cap the model
+      once held 9 technology stocks out of 10, which is really one bet wearing ten badges.</li>
+    <li><b>Split the money evenly</b> across the 10 and hold for about two months before re-picking.</li>
+    <li><b>Step mostly aside when the market is falling.</b> If the S&amp;P 500 is below its 200-day
+      average, the model holds only 25% invested and the rest in cash. Momentum earns in rising markets
+      and suffers in falling ones, so this rule exists to avoid the worst of that.</li>
+  </ul>
+
+  <h3>What each parameter means</h3>
+  <ul>
+    <li><b>$10B floor</b> — the smallest company it will consider.</li>
+    <li><b>12-1 momentum</b> — the ranking rule: last 12 months' return, skipping the last month.</li>
+    <li><b>10 names, equal weight</b> — 10% of the money in each position.</li>
+    <li><b>Sector cap 2</b> — at most 2 of the 10 from any one industry.</li>
+    <li><b>2-month clock</b> — how often it re-picks. Trading faster cost more in fees without improving
+      results; trading slower reacted too late.</li>
+    <li><b>t+1 execution</b> — it buys at the <em>next</em> day's close, because you cannot rank every
+      stock using a closing price and then also trade at that same price.</li>
+    <li><b>10 bps costs</b> — 0.10% charged on the portion of the book that changes, approximating real
+      trading friction.</li>
+    <li><b>25% in a downtrend</b> — the exposure kept while the market is below its 200-day average.</li>
+  </ul>
+
+  <h3>How the backtest was built, and why that matters</h3>
+  <p class="why">A backtest simulates what these rules would have done in the past. It is very easy to
+  make one look good by accident, so three things were done deliberately:</p>
+  <ul>
+    <li class="why"><b>Dead companies are included.</b> The data covers 12,164 companies, 7,851 of which
+      no longer exist. About a quarter of all positions the simulation ever took were in companies that
+      later went bankrupt or were acquired. Testing only on companies that survived to today is the most
+      common way a backtest lies — it inflated an earlier version of this model by roughly 8 percentage
+      points a year.</li>
+    <li class="why"><b>Nothing uses information from the future.</b> Prices and company data are used
+      only from dates on which they were genuinely public.</li>
+    <li class="why"><b>Results are measured daily.</b> An earlier round of our own testing sampled every
+      two months and reported a 16% worst-case loss for a portfolio whose real worst-case loss was 48%.
+      Sampling that coarsely cannot see a crash that happens and recovers in between.</li>
+  </ul>
+
+  <h3>What this model does <em>not</em> know</h3>
+  <ul>
+    <li>It has no idea what any company does, or whether it earns money. A stock that rose for a year is
+      bought whether the business is excellent or terrible.</li>
+    <li>It cannot anticipate a crash. The 200-day rule reacts <em>after</em> the market has already
+      turned down, so it limits damage rather than avoiding it.</li>
+    <li>Ten stocks is concentrated. Individual positions can and do fall heavily.</li>
+  </ul>
+
+  <div class="warn">
+    <b>Honest limits.</b> The historical simulation returned about 19.5% a year against the S&amp;P 500's
+    8.6%, with a worst-case loss of 41% (the index itself lost 55% in 2008). Those are <b>simulated</b>
+    results on past data, and the rules were chosen knowing how that period turned out. The previous
+    version of this model — a different momentum rule — was retired in July 2026 after testing on
+    survivorship-free data showed it <em>lost</em> to the index. Real forward-looking evidence begins the
+    day the current rules went live and is shown on the Edge Tracker page. None of this is investment
+    advice.
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
