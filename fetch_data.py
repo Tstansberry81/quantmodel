@@ -80,17 +80,38 @@ def _resolve_release_asset(tag_url: str) -> tuple[str, str]:
 
 auto_version = ""
 if url and "/releases/tags/" in url:
+    # Resolving the tag needs the network, and it happens before we know whether
+    # anything must be downloaded. So a failure here must NOT fail the build when
+    # usable artifacts already exist: a DNS blip, a rate limit or a truncated
+    # body would otherwise take down a deploy that needed no data at all. Catch
+    # broadly (URLError, JSONDecodeError, KeyError -- none are HTTPError).
     try:
         url, auto_version = _resolve_release_asset(url)
         print(f"[fetch_data] resolved release tag -> asset {auto_version.split(':')[0]}")
-    except urllib.error.HTTPError as e:
-        print(f"[fetch_data] ERROR {e.code} resolving the release tag — a private repo's "
-              f"releases need GITHUB_TOKEN with Contents:read.", file=sys.stderr)
+    except SystemExit:
+        raise                                  # our own "no such asset" message
+    except Exception as e:
+        code = getattr(e, "code", None)
+        hint = (" (a private repo's releases need GITHUB_TOKEN with Contents:read)"
+                if code in (401, 403, 404) else "")
+        if art.exists():
+            print(f"[fetch_data] WARNING: could not resolve the release tag{hint}: "
+                  f"{type(e).__name__}: {e}\n  -> keeping the artifacts already on disk.")
+            sys.exit(0)
+        print(f"[fetch_data] ERROR: could not resolve the release tag and there are no "
+              f"local artifacts to fall back on{hint}: {type(e).__name__}: {e}",
+              file=sys.stderr)
         sys.exit(1)
 
-# DATA_VERSION remains supported as a manual override (and for non-GitHub
-# hosting), but with a tag URL the version comes from the asset itself.
-want = os.environ.get("DATA_VERSION", "").strip() or auto_version
+# With a tag URL the asset itself is authoritative. A DATA_VERSION left over in
+# the dashboard from the old scheme must NOT win, or it pins `want` to a frozen
+# string that already equals the marker and every future republish is skipped --
+# silently reinstating the stale-bundle bug this scheme exists to remove.
+manual = os.environ.get("DATA_VERSION", "").strip()
+if manual and auto_version:
+    print(f"[fetch_data] NOTE: ignoring leftover DATA_VERSION='{manual}' — the release "
+          f"tag supplies the version. You can delete that variable.")
+want = auto_version or manual
 
 if art.exists() and (not want or want == have):
     why = ("no DATA_VERSION set and DATA_URL is not a release tag" if not want
@@ -106,8 +127,35 @@ if not url:
           "will start but backtests/portfolio will be unavailable until data is provided.")
     sys.exit(0)
 
-if token and "api.github.com" in url:
+# Gate on the URL, NOT on the token: a resolved tag always produces an
+# api.github.com asset URL, and without this header GitHub returns the asset's
+# JSON metadata, which then dies in zipfile with a thoroughly confusing error.
+if "api.github.com" in url:
     headers["Accept"] = "application/octet-stream"
+
+# GUARD, checked BEFORE spending the download. The published bundle is always
+# DEPLOY-TRIMMED (make_data_bundle keeps only names that ever cleared the model's
+# market-cap floor), so extracting it over a developer's FULL research artifact
+# destroys the wider universe that survivorship and small-cap work depend on.
+# Learned the hard way: an end-to-end test of this fetcher, pointed at the real
+# data dir, replaced a 12,164-name artifact with the 1,814-name deploy copy.
+# Keyed on the POSITIVE marker the trimmed bundle writes, not a name count -- a
+# meta.json without n_names scored 0 and let an earlier version fail OPEN.
+# On a host the artifact always came FROM a bundle and carries the marker, so
+# this only ever fires locally, which is the only place it can do damage.
+local_meta = config.ARTIFACT_DIR / "meta.json"
+if art.exists() and local_meta.exists() and not os.environ.get("FORCE_DATA_OVERWRITE"):
+    try:
+        _local = json.loads(local_meta.read_text(encoding="utf-8"))
+    except Exception:
+        _local = {}
+    if _local.get("deploy_trim_mcap") is None:
+        sys.exit(
+            f"[fetch_data] REFUSING to overwrite: the local artifact "
+            f"({_local.get('n_names', '?')} names) is NOT deploy-trimmed, and the "
+            f"published bundle is. Extracting would destroy the wider research "
+            f"universe.\n  -> set FORCE_DATA_OVERWRITE=1 if that is genuinely what "
+            f"you want, or unset DATA_URL for local work.")
 
 print("[fetch_data] downloading data bundle from DATA_URL ...")
 req = urllib.request.Request(url, headers=headers)
@@ -121,34 +169,8 @@ try:
         tmp = fh.name
         shutil.copyfileobj(r, fh, length=1 << 22)
     size = os.path.getsize(tmp)
+    print(f"[fetch_data] downloaded {size/1e6:.0f} MB; extracting to {config.ROOT} ...")
     with zipfile.ZipFile(tmp) as z:
-        # GUARD: the shipped bundle is DEPLOY-TRIMMED (only names that ever
-        # cleared the model's market-cap floor). Extracting it over a developer's
-        # full research artifact silently destroys the wider universe that
-        # survivorship census / small-cap work depends on, and the only warning
-        # is a much smaller file. Learned the hard way: an end-to-end test of
-        # this fetcher, pointed at the real data dir, replaced a 12,164-name
-        # artifact with the 1,814-name deploy copy.
-        # On a real host there is nothing to lose, so this only ever fires locally.
-        try:
-            incoming = json.loads(z.read("data/artifacts/meta.json").decode("utf-8"))
-        except Exception:
-            incoming = {}
-        local_meta = config.ARTIFACT_DIR / "meta.json"
-        if art.exists() and local_meta.exists() and not os.environ.get("FORCE_DATA_OVERWRITE"):
-            try:
-                local = json.loads(local_meta.read_text(encoding="utf-8"))
-            except Exception:
-                local = {}
-            here, there = local.get("n_names") or 0, incoming.get("n_names") or 0
-            if here > there and not local.get("deploy_trim_mcap"):
-                sys.exit(
-                    f"[fetch_data] REFUSING to overwrite: the local artifact has "
-                    f"{here:,} names and is NOT deploy-trimmed, while the bundle "
-                    f"carries {there:,}. Extracting would destroy the wider research "
-                    f"universe.\n  -> set FORCE_DATA_OVERWRITE=1 if that is genuinely "
-                    f"what you want, or unset DATA_URL for local work.")
-        print(f"[fetch_data] downloaded {size/1e6:.0f} MB; extracting to {config.ROOT} ...")
         z.extractall(config.ROOT)    # bundle holds data/artifacts/... and data/cache/...
 except urllib.error.HTTPError as e:
     hint = ""

@@ -18,21 +18,39 @@ zip we made earlier). **Rotate it at fiscal.ai.** The live site does NOT need it
 
 1. **Push the repo to GitHub** (the code only — `data/` stays gitignored).
 
-2. **Build + host the data bundle** (artifacts are too big for git):
+2. **Build + publish the data bundle** (artifacts are too big for git):
    ```
-   .venv-mac/bin/python make_data_bundle.py      # -> data_bundle.zip (~193 MB)
+   ALLOW_LICENSED_BUNDLE=1 .venv-mac/bin/python make_data_bundle.py   # -> data_bundle.zip (~300 MB)
+   .venv-mac/bin/python publish_bundle.py                             # -> the GitHub Release
    ```
-   Upload `data_bundle.zip` somewhere with a **direct-download link**. Easiest:
-   create a GitHub **Release** on the repo and attach the zip (assets up to 2 GB,
-   no bandwidth cap). Copy the asset's download URL.
+   `publish_bundle.py` always uploads under the **fixed name** `data_bundle.zip`
+   (staging upload → retire the old one → rename), so the release tag URL stays
+   valid forever and there is never a window where the asset is missing.
+
+   **No environment edits are needed on a republish.** `DATA_URL` points at the
+   release *tag*, and `fetch_data.py` resolves the asset underneath it and derives
+   the version from the asset's own `id:updated_at`. Pinning an asset *id* was
+   what previously forced both `DATA_URL` and `DATA_VERSION` to be hand-edited
+   every time — and forgetting either silently kept serving the old bundle.
 
 3. **Create the Render service**: Dashboard → New → **Blueprint** → pick the repo
    (it reads `render.yaml`). Then set env vars:
-   - `DATA_URL` = the data_bundle.zip download link from step 2.
+   - `DATA_URL` = the release **TAG** API URL, e.g.
+     `https://api.github.com/repos/<owner>/<repo>/releases/tags/data-v2-sharadar`
+     (not an individual asset URL — those change id on every upload).
+   - `GITHUB_TOKEN` = fine-grained PAT with **Contents: read** — the repo is
+     private, so its release assets 404 without auth.
+   - **Do NOT set `DATA_VERSION`.** It is a manual override for non-GitHub
+     hosting; left over from the old scheme it would pin the version and skip
+     every future republish. `fetch_data.py` warns if it finds one.
    - (`FISCAL_API_KEY` only if you'll rebuild data on the host — usually skip.)
 
 4. **Deploy.** Build runs `fetch_data.py` (downloads + extracts the bundle); start
-   runs gunicorn. First page load triggers the panel build (~1–2 min) — after that
+   runs gunicorn. The bundle ships a **prebuilt panel**, so the first backtest is
+   ~2s rather than a rebuild — but note the panel fingerprint hashes `edge_lib.py`,
+   so any code change to that file invalidates it and the first cold start after
+   such a push pays one rebuild (cached to the `/var/data` disk thereafter).
+   Republishing the bundle avoids even that. Previously — after that
    it's cached and fast.
 
 ## Notes / gotchas

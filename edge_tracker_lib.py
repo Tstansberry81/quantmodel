@@ -632,8 +632,19 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
                 "cost_bps": COST_BPS, "signal": _SIGNAL_LABEL,
                 "sector_cap": SECTOR_CAP,
+                # The two EXPOSURE overlays are reported so the page can say they
+                # exist, but `overlays_in_returns` is False on purpose: this
+                # module's book and paper log come from E._edge_full, which is a
+                # PER-REBALANCE path with no vol_target/continuous_regime
+                # parameters at all (see its signature). Those overlays act on the
+                # DAILY curve via E._edge_daily, which only the backtest page uses.
+                # Reporting them without this flag made the tracker claim a 25%
+                # vol target for returns computed without one -- the same
+                # describe-a-model-that-is-not-running failure as the old
+                # hardcoded "acceleration" label (RESEARCH_RULES #7).
                 "continuous_regime": CONTINUOUS_REGIME,
                 "vol_target": VOL_TARGET, "vol_lookback": VOL_LOOKBACK,
+                "overlays_in_returns": False,
             },
             "model_status": MODEL_STATUS,
         }

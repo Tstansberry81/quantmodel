@@ -65,23 +65,41 @@ def main() -> None:
                  f"{r.json().get('message', '')}")
     rel = r.json()
 
-    # Delete any existing asset with this name. GitHub rejects a duplicate name
-    # rather than replacing it, and leaving the old one around would make the
-    # name ambiguous for the fetcher.
+    # UPLOAD FIRST, THEN SWAP. Deleting the live asset before uploading its
+    # replacement opens a window where the release has no asset of this name at
+    # all -- and because DATA_URL now resolves by name instead of pinning an id,
+    # any deploy landing in that window fails outright with "release has no asset
+    # named ...". A 300MB upload over a flaky link is exactly when that happens.
+    # GitHub rejects a duplicate name, so upload under a staging name, delete the
+    # old one only once the bytes are safely up, then PATCH the name into place.
+    staging = f"{ASSET}.incoming"
     for a in rel.get("assets", []):
-        if a.get("name") == ASSET:
-            d = requests.delete(f"{base}/releases/assets/{a['id']}", headers=h, timeout=60)
-            print(f"  deleted previous asset {a['id']} ({d.status_code})")
+        if a.get("name") == staging:            # leftover from an earlier failure
+            requests.delete(f"{base}/releases/assets/{a['id']}", headers=h, timeout=60)
 
     size_mb = BUNDLE.stat().st_size / 1e6
-    print(f"  uploading {ASSET} ({size_mb:.0f} MB) to release {TAG} ...")
+    print(f"  uploading {size_mb:.0f} MB as {staging} ...")
     with open(BUNDLE, "rb") as fh:
-        up = requests.post(rel["upload_url"].split("{")[0], params={"name": ASSET},
+        up = requests.post(rel["upload_url"].split("{")[0], params={"name": staging},
                            headers={**h, "Content-Type": "application/zip"},
                            data=fh, timeout=3600)
     if up.status_code not in (200, 201):
-        sys.exit(f"publish_bundle: upload failed ({up.status_code}): {up.text[:300]}")
-    a = up.json()
+        sys.exit(f"publish_bundle: upload failed ({up.status_code}): {up.text[:300]}\n"
+                 f"  the previous {ASSET} is untouched and still serving.")
+    new_id = up.json()["id"]
+
+    for a in rel.get("assets", []):
+        if a.get("name") == ASSET:
+            d = requests.delete(f"{base}/releases/assets/{a['id']}", headers=h, timeout=60)
+            print(f"  retired previous asset {a['id']} ({d.status_code})")
+
+    ren = requests.patch(f"{base}/releases/assets/{new_id}", headers=h,
+                         json={"name": ASSET}, timeout=60)
+    if ren.status_code != 200:
+        sys.exit(f"publish_bundle: uploaded OK but rename failed ({ren.status_code}). "
+                 f"Asset {new_id} is on the release as '{staging}' — rename it to "
+                 f"'{ASSET}' by hand, or re-run.")
+    a = ren.json()
     print(f"  done: asset {a['id']} · {a.get('state')} · {a['size']/1e6:.0f} MB")
     print()
     print("Nothing to change in the Render environment. It should already hold:")

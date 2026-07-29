@@ -23,6 +23,7 @@ import logging
 import os
 import pathlib
 import pickle
+import threading
 import time as _time
 import config
 import edge_data as D                # self-contained Edge data layer (no Slow Burn deps)
@@ -382,11 +383,30 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
              _time.time() - t0, hold, universe)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        # UNIQUE temp name per writer. lru_cache holds no lock across the wrapped
+        # call, so with gunicorn --threads 4 two requests can miss and both build
+        # the same panel. A shared "<name>.tmp" let the second open() truncate the
+        # first's bytes and the first replace() then published a corrupt pickle --
+        # which load_edge_panel would reject forever after, rebuilding on every
+        # cold start: exactly the cost this cache exists to avoid.
+        # Same directory as `path`, so replace() stays within one filesystem
+        # (/var/data is a separate Render disk -- a cross-device rename would fail).
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
         with open(tmp, "wb") as fh:
             pickle.dump({"fingerprint": want, "panel": panel}, fh, protocol=4)
-        tmp.replace(path)      # atomic: a reader never sees a half-written panel
+        os.replace(tmp, path)  # atomic: a reader never sees a half-written panel
         log.info("panel cached to %s", path)
+        # Sweep orphaned temps from crashed writers. Filenames do NOT encode the
+        # fingerprint, so panels themselves overwrite in place and are bounded by
+        # the number of (hold, universe, offset) combos -- but a process killed
+        # mid-write leaves its unique .tmp behind, and this dir is a small
+        # persistent disk shared with the paper-trading record.
+        for stale in path.parent.glob(f"{path.stem}.*.tmp"):
+            try:
+                if stale != tmp and _time.time() - stale.stat().st_mtime > 3600:
+                    stale.unlink()
+            except OSError:
+                pass
     except Exception:
         log.warning("could not write panel cache %s", path, exc_info=True)
     return panel

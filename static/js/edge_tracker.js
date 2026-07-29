@@ -74,7 +74,7 @@ function render(d){
   document.getElementById('bookmeta').textContent =
     `${heldTxt} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
     +`ranked by ${spec.signal} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
-    +`max ${spec.sector_cap} per sector, ${fmtN(spec.vol_target*100,0)}% vol target${recTxt}${regimeTxt}.`;
+    +`${spec.sector_cap ? `max ${spec.sector_cap} per sector` : 'no sector cap'}${recTxt}${regimeTxt}.`;
 
   // ---- FORWARD record (the only out-of-sample evidence) ----
   // Rendered above and apart from the backtest-seeded log below. Mixing them
@@ -142,7 +142,13 @@ function render(d){
     +`beat the S&P ${fmtPct(s.hit_rate)} of the time · avg excess ${sgnPct(s.avg_excess)}/trade `
     +`(avg Edge ${sgnPct(s.avg_edge_ret)} vs S&P ${sgnPct(s.avg_sp_ret)}). `
     +`Returns are NET of ${spec.cost_bps}bps costs. These are backtest results, not a forward record — `
-    +`that lives in the panel above.`;
+    +`that lives in the panel above.`
+    + (spec.overlays_in_returns === false
+        ? ` Per-rebalance returns apply the 200dMA gate as judged at each rebalance, but NOT the`
+          + `${spec.continuous_regime ? ' daily regime check or' : ''}`
+          + `${spec.vol_target ? ` ${fmtN(spec.vol_target*100,0)}% volatility target` : ' exposure overlays'}`
+          + ` — those act on the daily curve, which the backtest page measures.`
+        : '');
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
