@@ -23,6 +23,7 @@ import logging
 import os
 import pathlib
 import pickle
+import time as _time
 import config
 import edge_data as D                # self-contained Edge data layer (no Slow Burn deps)
 import pit_universe as PIT           # pluggable PIT Russell-1000 universe layer
@@ -323,8 +324,35 @@ def _panel_fingerprint(hold: int, universe: int, offset_days: int) -> str:
     return h.hexdigest()[:16]
 
 
-def _panel_cache_path(hold: int, universe: int, offset_days: int) -> pathlib.Path:
-    return config.CACHE_DIR / f"panel_h{hold}_u{universe}_o{offset_days}.pkl"
+# Where a REBUILT panel gets cached. Defaults to data/cache (right for local dev
+# and for reading the panel shipped in the bundle), but on an ephemeral host that
+# directory dies with the instance -- so a rebuild triggered by a fingerprint
+# miss is paid again on EVERY cold start, not once.
+#
+# That is not hypothetical: the fingerprint hashes edge_lib.py, so any code
+# change here invalidates the panel shipped in the bundle, and the bundle only
+# moves when DATA_URL/DATA_VERSION are bumped by hand. Between a code deploy and
+# a data re-upload the site is guaranteed to be in that state. Pointing this at
+# the persistent disk makes the rebuild cost land once instead of forever.
+PANEL_CACHE_DIR = pathlib.Path(
+    os.environ.get("EDGE_PANEL_CACHE_DIR", str(config.CACHE_DIR)))
+
+
+def _panel_cache_paths(hold: int, universe: int, offset_days: int):
+    """(paths to try reading, path to write).
+
+    Read and write targets differ on purpose. The bundled panel lives in
+    data/cache and is read-only in effect (the next deploy overwrites it), while
+    a REBUILT panel must land somewhere that survives a restart. Writing the
+    rebuild back over the bundled path -- the obvious one-path version of this --
+    would put it straight back on ephemeral storage, which is exactly the case
+    this exists to fix.
+    """
+    name = f"panel_h{hold}_u{universe}_o{offset_days}.pkl"
+    shipped = config.CACHE_DIR / name
+    persist = PANEL_CACHE_DIR / name
+    reads = [shipped] if shipped == persist else [shipped, persist]
+    return reads, persist
 
 
 @lru_cache(maxsize=10)
@@ -332,28 +360,35 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
     """Memoized panel: RAM -> disk -> build. See _panel_fingerprint for why a
     disk hit is only trusted when the fingerprint matches exactly."""
     want = _panel_fingerprint(hold, universe, offset_days)
-    path = _panel_cache_path(hold, universe, offset_days)
-    if path.exists():
+    reads, path = _panel_cache_paths(hold, universe, offset_days)
+    for cand in reads:
+        if not cand.exists():
+            continue
         try:
-            with open(path, "rb") as fh:
+            with open(cand, "rb") as fh:
                 blob = pickle.load(fh)
             if blob.get("fingerprint") == want:
                 return blob["panel"]
             log.info("panel cache %s is stale (data or code changed); rebuilding",
-                     path.name)
+                     cand)
         except Exception:
             # A corrupt or cross-version pickle must never be fatal: the whole
             # point of this cache is speed, and rebuilding always works.
-            log.warning("panel cache %s unreadable; rebuilding", path.name, exc_info=True)
+            log.warning("panel cache %s unreadable; rebuilding", cand, exc_info=True)
 
+    t0 = _time.time()
     panel = _build_edge_panel(hold, universe, offset_days)
+    log.info("panel rebuilt in %.0fs (hold=%s universe=%s)",
+             _time.time() - t0, hold, universe)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         with open(tmp, "wb") as fh:
             pickle.dump({"fingerprint": want, "panel": panel}, fh, protocol=4)
         tmp.replace(path)      # atomic: a reader never sees a half-written panel
+        log.info("panel cached to %s", path)
     except Exception:
-        log.warning("could not write panel cache %s", path.name, exc_info=True)
+        log.warning("could not write panel cache %s", path, exc_info=True)
     return panel
 
 

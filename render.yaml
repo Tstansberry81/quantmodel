@@ -32,6 +32,13 @@ services:
     envVars:
       - key: EDGE_TRACKER_PATH
         value: /var/data/edge_tracker.json
+      # Rebuilt panels land here too. The fingerprint hashes edge_lib.py, so any
+      # code change invalidates the panel shipped in the bundle -- and the bundle
+      # only moves when DATA_URL/DATA_VERSION are bumped by hand. Between a code
+      # deploy and a data re-upload, the panel WILL be rebuilt; this makes that
+      # cost land once rather than on every cold start.
+      - key: EDGE_PANEL_CACHE_DIR
+        value: /var/data
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
       # pit_universe auto-detects, and now that the artifact reports
       # source=sharadar the SharadarAdapter activates -- so production would
