@@ -53,7 +53,7 @@ function render(d){
   // ---- current book table ----
   document.querySelector('#book tbody').innerHTML = (d.current_book||[]).map(b=>
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
-     <td>${fmtPct(b.weight)}</td><td class="${cls(b.accel)}">${fmtN(b.accel,2)}</td>
+     <td>${fmtPct(b.weight)}</td><td class="${cls(b.signal)}">${fmtN(b.signal,2)}</td>
      <td class="${cls(b.ret_todate)}">${b.ret_todate==null?'—':sgnPct(b.ret_todate)}</td></tr>`).join('');
   const mixTxt = spec.growth_mix>0 ? `${Math.round(spec.growth_mix*100)}% growth mix` : 'pure momentum';
   const recTxt = s.record==='paper-n7'
@@ -69,10 +69,40 @@ function render(d){
     : '';
   document.getElementById('bookmeta').textContent =
     `${heldTxt} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
-    +`ranked by acceleration signal · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
+    +`ranked by ${spec.signal} · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
     +`corr cap ${fmtN(spec.corr_cap,2)}${recTxt}${regimeTxt}.`;
 
-  // ---- paper-trading log (newest first) ----
+  // ---- FORWARD record (the only out-of-sample evidence) ----
+  // Rendered above and apart from the backtest-seeded log below. Mixing them
+  // let 164 simulated rebalances visually swamp the handful of real ones.
+  const fs = d.forward_stats || {};
+  const flog = (d.forward_log||[]).slice().reverse();
+  const fwdBody = document.querySelector('#fwdlog tbody');
+  if (fwdBody) {
+    fwdBody.innerHTML = flog.length ? flog.map(t=>{
+      const open = t.status==='OPEN';
+      return `<tr><td>${t.book_date}</td>
+        <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}</td>
+        <td>${open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>'}</td>
+        <td class="${cls(t.edge_ret)}">${t.edge_ret==null?'—':sgnPct(t.edge_ret)}</td>
+        <td class="${cls(t.sp_ret)}">${t.sp_ret==null?'—':sgnPct(t.sp_ret)}</td>
+        <td class="${cls(t.excess)}">${t.excess==null?'—':sgnPct(t.excess)}</td>
+        <td class="small">${(t.tickers||[]).join(' ')}</td></tr>`;
+    }).join('')
+      : `<tr><td colspan="7" class="small">No forward rebalances recorded yet — the
+         record restarts whenever the model's parameters change, and the first
+         entry closes after one full holding period.</td></tr>`;
+  }
+  const fwdMeta = document.getElementById('fwdmeta');
+  if (fwdMeta) {
+    fwdMeta.textContent = fs.n_closed
+      ? `${fs.n_closed} closed · ${fmtPct(fs.hit_rate)} beat the S&P · `
+        +`${sgnPct(fs.avg_excess)} average excess · ${fs.n_open} open`
+      : `${fs.n_open||0} open, 0 closed. Nothing here is evidence yet — the first `
+        +`rebalance needs a full holding period to finish.`;
+  }
+
+  // ---- BACKTEST-SEEDED log (newest first) — NOT out-of-sample ----
   const log=(d.log||[]).slice().reverse();
   document.querySelector('#log tbody').innerHTML = log.map((t,i)=>{
     const open = t.status==='OPEN';

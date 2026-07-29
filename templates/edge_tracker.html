@@ -8,26 +8,41 @@
 <div class="panel">
   <h2>How The Edge picks &mdash; the model</h2>
   <p class="small">A <b>market-data-only</b> momentum model (no fundamentals). The core signal is
-  <b>acceleration</b> &mdash; whether a stock's momentum is speeding up or slowing down:</p>
+  <b>12-1 momentum</b> &mdash; the last 12 months of return, skipping the most recent month:</p>
   <div style="font-family:ui-monospace,Menlo,Consolas,monospace;background:#0d1117;border:1px solid #21262d;
               border-radius:8px;padding:14px 16px;margin:10px 0;font-size:15px;color:#e6edf3;overflow-x:auto">
-    accel&nbsp;=&nbsp;(&nbsp;P<sub>t</sub>&nbsp;/&nbsp;P<sub>t&minus;3mo</sub>&nbsp;&minus;&nbsp;1&nbsp;)
-    &nbsp;&minus;&nbsp;(&nbsp;P<sub>t&minus;3mo</sub>&nbsp;/&nbsp;P<sub>t&minus;6mo</sub>&nbsp;&minus;&nbsp;1&nbsp;)
+    ret<sub>12&minus;1</sub>&nbsp;=&nbsp;(&nbsp;P<sub>t&minus;1mo</sub>&nbsp;/&nbsp;P<sub>t&minus;12mo</sub>&nbsp;)&nbsp;&minus;&nbsp;1
   </div>
-  <p class="small">i.e. the most recent 3-month return <i>minus</i> the prior 3-month return. Positive = momentum building.</p>
+  <p class="small">The most recent month is skipped deliberately: over that horizon stocks tend to
+  <i>reverse</i>, so including it works against the signal. This replaced the old acceleration signal
+  in July 2026, after acceleration was falsified on survivorship-free data.</p>
   <p class="small" style="margin-top:14px"><b>Each rebalance (~2-month clock):</b></p>
   <ol class="small" style="line-height:1.7;margin-top:4px">
     <li><b>Universe</b> &mdash; top ~1,000 US names by market cap (Russell-1000 proxy).</li>
-    <li><b>Liquidity floor</b> &mdash; keep only names &ge; $2B market cap (tradeable size).</li>
-    <li><b>Rank</b> by the acceleration signal, highest first.</li>
-    <li><b>Correlation cap</b> &mdash; admit a name only if it's &le; 0.50 correlated with every holding already in the basket (so it never becomes eight versions of one bet).</li>
+    <li><b>Liquidity floor</b> &mdash; keep only names &ge; $10B market cap. Momentum degrades as the
+      floor drops &mdash; at $200M this same model loses badly to the index &mdash; so the floor is
+      load-bearing, not a convenience.</li>
+    <li><b>Rank</b> by 12-1 momentum, highest first.</li>
+    <li><b>Sector cap</b> &mdash; at most 2 of the 10 from any one sector. Without it the book once
+      held 9 technology names, which is really one bet wearing ten badges.</li>
     <li><b>Hold</b> the top N equal-weight (selector above; product = 10 stocks, the 7-stock research book is paper-tracked alongside).</li>
-    <li><b>Regime switch</b> &mdash; if the S&amp;P 500 is below its 200-day average, cut to 25% invested (rest in cash) to dodge crashes.</li>
-    <li><b>Costs</b> &mdash; returns are shown net of ~10bps trading costs.</li>
-    <li><b>Growth mix</b> &mdash; optionally draw part of the basket (default 75%) from names with &ge;15% YoY revenue growth; the selector above adjusts it (Off&ndash;100%).</li>
+    <li><b>Regime switch</b> &mdash; if the S&amp;P 500 is below its 200-day average, cut to 25%
+      invested (rest in cash). Checked <i>every day</i>, not only on rebalance day.</li>
+    <li><b>Volatility target</b> &mdash; scale the whole book down whenever its own recent swings run
+      hotter than a 25%-a-year pace. This covers what the regime switch structurally cannot: the two
+      worst drawdowns in this model's history happened while the S&amp;P was <i>above</i> its 200-day
+      average and falling only ~10%. The market was fine; the momentum stocks were not.</li>
+    <li><b>Costs</b> &mdash; returns are shown net of ~10bps trading costs, including the cost of
+      changing exposure.</li>
   </ol>
-  <p class="small" style="color:#8b949e;margin-top:10px">Honest caveats: history is survivorship-inflated (missing delisted names), short-window returns are lumpy and tail-driven, and the recent era has been unusually momentum-friendly &mdash; trust the risk-adjusted shape (Sharpe, drawdown) over the headline CAGR.</p>
-  <p class="small" style="color:#8b949e;margin-top:8px">Note: the live product runs <b>two staggered sleeves</b> (a half-period offset) to remove rebalance-date luck, and signals enter one day after they're formed. This tracker follows the primary sleeve's picks as a forward record of the signal; the backtester on the Edge page reflects the full staggered, daily-simulated performance.</p>
+  <p class="small" style="color:#8b949e;margin-top:10px">Honest caveats: short-window returns are
+  lumpy and tail-driven, and the recent era has been unusually momentum-friendly &mdash; trust the
+  risk-adjusted shape (Sharpe, drawdown) over the headline CAGR. History is now survivorship-free
+  (delisted companies included), which cut the measured edge substantially versus earlier versions of
+  this page.</p>
+  <p class="small" style="color:#8b949e;margin-top:8px">Note: signals are formed at one close and
+  entered at the <i>next</i> one, so the model never trades at the price it used to decide. The
+  product runs a single sleeve &mdash; staggering was tested and dropped (it cost 0.8pts).</p>
 </div>
 
 <div class="controls" style="margin-bottom:10px">
@@ -86,14 +101,31 @@
   <div class="panel">
     <h2>Current book <span class="small">— the position open right now</span></h2>
     <table id="book">
-      <thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Signal (accel)</th><th>Since open</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Signal (12-1 mom)</th><th>Since open</th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="small" id="bookmeta"></p>
   </div>
 
   <div class="panel">
-    <h2>Paper-trading log <span class="small">— snapshots tracked forward vs S&amp;P</span></h2>
+    <h2>Forward record <span class="small">— the only out-of-sample evidence</span></h2>
+    <p class="small">Every rebalance below was <b>written down before its outcome was known</b>. The
+    &ldquo;logged&rdquo; column is the wall-clock time this system first recorded that basket &mdash;
+    that timestamp, not the book date, is what makes a row genuine evidence. The record restarts
+    whenever the model's parameters change, so it is deliberately short.</p>
+    <table id="fwdlog">
+      <thead><tr><th>Book date</th><th>Logged</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Basket</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="small" id="fwdmeta"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Backtest-seeded history <span class="small">— simulated, NOT out-of-sample</span></h2>
+    <p class="small">Every rebalance since 1999 rendered as a finished trade. This is useful context
+    for how the rules behave across eras, but it is <b>not</b> evidence the model works going forward:
+    the rules were chosen already knowing how these periods turned out. Judge the model on the
+    forward record above.</p>
     <table id="log">
       <thead><tr><th>Opened</th><th>Closes</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Portfolio</th></tr></thead>
       <tbody></tbody>

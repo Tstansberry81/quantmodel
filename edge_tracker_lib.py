@@ -114,7 +114,7 @@ UPGRADES = {
     f"paper-n{PAPER_N}": [f"basket size {PAPER_N} (vs {N})"],
     "paper-upgraded": [
         "GP/assets quality gate — drop the bottom 40% by gross profitability "
-        "(Novy-Marx) before the accel pick; shallower DD + higher Sortino at n=10 "
+        "(Novy-Marx) before the momentum pick; shallower DD + higher Sortino at n=10 "
         "(stage-2 rigor 2026-07-13)",
         "[the continuous 200dMA regime this sleeve pioneered was PROMOTED TO "
         "PRODUCTION 2026-07-13, so it is no longer a delta vs the shipped book]",
@@ -269,9 +269,9 @@ def _current_book(pan, data, n, mix):
     data supports one; that is a full hold period fresher than the last
     backtest rebalance, which by construction must be old enough to have
     finished. Equal-weight (1/n) honoring the growth mix (K=round(mix*n) names
-    from the >=GROWTH_THRESH revenue-growth pool, rest pure acceleration); we
-    also surface the raw acceleration signal so the reader can see the
-    conviction ordering, and the mark-to-market return since the open."""
+    from the >=GROWTH_THRESH revenue-growth pool, rest pure signal); we also
+    surface the raw ranking signal so the reader can see the conviction
+    ordering, and the mark-to-market return since the open."""
     live = pan.live_panel is not None and len(pan.live_panel) > 0
     df = pan.live_panel if live else pan.panels[pan.T - 1]
     bdate = pan.live_date if live else pan.bdates[pan.T - 1]
@@ -281,20 +281,27 @@ def _current_book(pan, data, n, mix):
                           sector_cap=SECTOR_CAP)
     w = 1.0 / len(cks) if cks else 0.0
     idx = df.set_index("company_key")
-    accel = idx["accel"]
+    # Read the column the model ACTUALLY ranks on, derived from SIGNAL, rather
+    # than a hardcoded one. This page kept displaying and sorting by "accel"
+    # after the model moved to 12-1 momentum, so the book was picked by one
+    # number and presented ordered by a different, retired one.
+    sig_col = max(SIGNAL, key=SIGNAL.get) if SIGNAL else "ret_12_1"
+    sig = idx[sig_col] if sig_col in idx.columns else None
     todate = idx["fwd_todate"] if "fwd_todate" in idx.columns else None
     book = []
     for ck in cks:
         tk, nm, sec = _meta(data, ck)
         r = float(todate.get(ck, float("nan"))) if todate is not None else float("nan")
+        s = float(sig.get(ck, float("nan"))) if sig is not None else float("nan")
         book.append({
             "ticker": tk, "name": nm, "sector": sec, "weight": w,
-            "accel": float(accel.get(ck, float("nan"))),
+            "signal": s,
+            "signal_col": sig_col,
             "price": _latest_price(data, ck),
             "ret_todate": (r if r == r else None),      # NaN -> None
         })
-    # show highest-conviction (accel) first
-    book.sort(key=lambda r: (r["accel"] if r["accel"] == r["accel"] else -1e9),
+    # highest-conviction first, by the signal actually used
+    book.sort(key=lambda r: (r["signal"] if r["signal"] == r["signal"] else -1e9),
               reverse=True)
     return book, str(pd.Timestamp(bdate).date()), cks, live
 
@@ -411,6 +418,72 @@ def _snap_config(s):
     return s.get("config", "product")
 
 
+def _forward_log(snaps, full_log, cfg, book_date):
+    """The GENUINELY FORWARD record: one entry per rebalance this system actually
+    observed in real time, newest last.
+
+    This is deliberately separate from `log`. That one is seeded from backtest
+    history -- every rebalance since 1999 rendered as a "closed paper trade" --
+    which is useful context but is NOT out-of-sample evidence, because the rules
+    were chosen knowing how those periods turned out. Presenting the two in one
+    list let a 164-row backtest visually swamp the handful of rows that are the
+    only real evidence, and made the record look far longer than it is.
+
+    Each entry carries `logged_at`: the wall-clock time this book was first
+    written down. That timestamp, not the book date, is what makes a row
+    forward -- it proves the basket was recorded before the outcome was known.
+    Realized returns are joined from the backtest log once a hold window has
+    actually completed; until then the row is OPEN.
+    """
+    # the backtest log keys its rebalance date as "opened", not "book_date"
+    by_date = {e.get("opened"): e for e in full_log}
+    out = []
+    for s in [x for x in snaps if _snap_config(x) == cfg]:
+        bd = s.get("book_date")
+        match = by_date.get(bd)
+        # A rebalance is only CLOSED once a realized forward return exists for
+        # it; the live book is still open by construction, and the matching log
+        # row carries status OPEN in that case.
+        is_open = match is None or match.get("status") != "CLOSED"
+        closed = match or {}
+        out.append({
+            "book_date": bd,
+            "closes": closed.get("closes"),
+            "logged_at": s.get("logged_at"),
+            "tickers": s.get("tickers", []),
+            "n": s.get("n"),
+            "status": "OPEN" if is_open else "CLOSED",
+            "edge_ret": None if is_open else closed.get("edge_ret"),
+            "sp_ret": None if is_open else closed.get("sp_ret"),
+            "excess": None if is_open else closed.get("excess"),
+            "holdings": None if is_open else closed.get("holdings"),
+        })
+    out.sort(key=lambda e: (e["book_date"] or ""))
+    return out
+
+
+def _forward_stats(flog):
+    """Stats over the forward record ONLY. Kept apart from the backtest-seeded
+    log's stats so a hit rate computed over 164 simulated rebalances can never
+    be read as the forward record's."""
+    closed = [e for e in flog if e["status"] == "CLOSED" and e.get("excess") is not None]
+    n_open = sum(1 for e in flog if e["status"] == "OPEN")
+    if not closed:
+        return {"n_closed": 0, "n_open": n_open, "hit_rate": None,
+                "avg_excess": None, "avg_edge_ret": None, "avg_sp_ret": None,
+                "first_logged": (flog[0].get("logged_at") if flog else None)}
+    ex = [e["excess"] for e in closed]
+    return {
+        "n_closed": len(closed),
+        "n_open": n_open,
+        "hit_rate": sum(1 for v in ex if v > 0) / len(ex),
+        "avg_excess": sum(ex) / len(ex),
+        "avg_edge_ret": sum(e["edge_ret"] for e in closed) / len(closed),
+        "avg_sp_ret": sum(e["sp_ret"] for e in closed) / len(closed),
+        "first_logged": flog[0].get("logged_at") if flog else None,
+    }
+
+
 def _persist_snapshots(pan, data, mix):
     """Append the current rebalance's book to the snapshot file for BOTH forward
     records — the product (n=N) and the n=PAPER_N research candidate — the first
@@ -450,7 +523,7 @@ def _persist_snapshots(pan, data, mix):
                 "config": "paper-upgraded",
                 "n": GP_GATE_N,
                 "gate_frac": GP_GATE_FRAC,
-                "signal": "acceleration + continuous 200dMA regime + GP/assets quality gate",
+                "signal": "12-1 momentum + continuous 200dMA regime + GP/assets quality gate",
                 "book_date": book_date,
                 "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "tickers": gp_tickers,
@@ -467,7 +540,7 @@ def _persist_snapshots(pan, data, mix):
             snaps.append({
                 "config": "paper-pead",
                 "n": PEAD_N,
-                "signal": "acceleration + PEAD earnings-confirmation gate (drop SUE<0)",
+                "signal": "12-1 momentum + PEAD earnings-confirmation gate (drop SUE<0)",
                 "book_date": book_date,
                 "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "tickers": pead_tickers,
@@ -521,6 +594,10 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         # the stats card reflects the record matching the viewed basket size
         viewed_cfg = f"paper-n{PAPER_N}" if n == PAPER_N else "product"
         vsnaps = [s for s in snaps if _snap_config(s) == viewed_cfg]
+        # built off full_log (not the window-trimmed `log`) so a short viewing
+        # window can never silently truncate the forward record
+        forward_log = _forward_log(snaps, full_log, viewed_cfg, book_date)
+        forward_stats = _forward_stats(forward_log)
 
         stats = {
             "n_snapshots": len(vsnaps),
@@ -543,7 +620,12 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             "book_date": book_date,
             "window": window,
             "current_book": current_book,
+            # `log` is BACKTEST-SEEDED history; `forward_log` is the only
+            # out-of-sample record. Kept as separate keys so the page cannot
+            # accidentally present one as the other.
             "log": log,
+            "forward_log": forward_log,
+            "forward_stats": forward_stats,
             "stats": stats,
             "spec": {
                 "hold_days": hold, "n": n, "mcap_floor_bn": MCAP_FLOOR / 1e9,
