@@ -32,9 +32,21 @@ import zipfile
 import config
 
 art = config.ARTIFACT_DIR / "backtest_data.pkl"
-if art.exists():
-    print(f"[fetch_data] artifacts already present ({art}); nothing to download.")
+# Version marker. "artifacts already present -> skip" is right for local dev but
+# silently wrong the moment the BUNDLE changes: on any host that preserves the
+# directory between deploys, a stale panel survives forever and the site keeps
+# serving old data while every deploy reports success. Bump DATA_VERSION in the
+# environment alongside DATA_URL and the fetcher re-downloads.
+marker = config.ARTIFACT_DIR / ".data_version"
+want = os.environ.get("DATA_VERSION", "").strip()
+have = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+if art.exists() and (not want or want == have):
+    why = "no DATA_VERSION set" if not want else f"version {have} already installed"
+    print(f"[fetch_data] artifacts already present ({why}); nothing to download.")
     sys.exit(0)
+if art.exists():
+    print(f"[fetch_data] artifacts present but version '{have or 'unknown'}' != "
+          f"requested '{want}' — re-downloading.")
 
 url = os.environ.get("DATA_URL", "").strip()
 if not url:
@@ -76,6 +88,17 @@ finally:
     if tmp and os.path.exists(tmp):
         os.remove(tmp)
 
-print("[fetch_data] done.",
-      "OK" if art.exists() else
-      "WARNING: backtest_data.pkl still missing — check the bundle layout.")
+if art.exists() and want:
+    marker.write_text(want, encoding="utf-8")
+
+ok = art.exists()
+if ok:
+    try:
+        import json as _json
+        _m = _json.loads((config.ARTIFACT_DIR / "meta.json").read_text(encoding="utf-8"))
+        print(f"[fetch_data] done. OK — source={_m.get('source')} "
+              f"names={_m.get('n_names')} built={_m.get('built_at')}")
+    except Exception:
+        print("[fetch_data] done. OK")
+else:
+    print("[fetch_data] WARNING: backtest_data.pkl still missing — check the bundle layout.")
