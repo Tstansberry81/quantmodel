@@ -61,6 +61,28 @@ money is that it is survivorship-free; quietly dropping dead companies inflates
 everything — measured here at **+8.5%/yr of fake excess** on the old fiscal.ai
 panel, which carried 111 delisted names that all died in 2024 or later.
 
+**Survivorship-free DATA is necessary but not sufficient** — the panel can
+reintroduce the bias by itself. Audited 2026-07-29:
+
+* The current artifact is clean: 7,826 delisted names (64% of it), spread evenly
+  across every year; 590 of them once reached $10B, at 12–38/year with no
+  clustering. The model demonstrably eats real losses (worst positions −63%,
+  −62%, −62%; five of the ten worst later delisted).
+* But the panel USED to drop a name on date *d* because it knew the company
+  would stop trading within the next 42 days. That is look-ahead introduced by
+  panel construction, not by the vendor. Fixed — `DELIST_HAIRCUT` now defaults
+  to 0.0 — at a cost of 0.18pts of CAGR (18.47 → 18.29%).
+* Still true, and bounded: `daily_return_matrix()` forward-fills prices, so a
+  delisted name is frozen at 0% return on the daily curve rather than marked
+  down. Right for an acquisition, generous for a bankruptcy by the final gap.
+  Affects 1.1% of positions — all acquisitions in this history.
+
+Two lessons. **Audit the panel-construction path, not just the vendor.** And
+**when a stress knob shows no effect, prove the knob reaches the path you are
+measuring** — the delist haircut moves `fwd_ret` (per-rebalance) while the site
+reports the daily curve, so "−100% wipeout changes nothing" looked like a clean
+pass and was actually measuring the wrong code path.
+
 ## 5. Caches are part of the answer
 
 `edge_lib` memoises panels, selection and daily series. Anything that changes

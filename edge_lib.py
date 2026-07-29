@@ -37,18 +37,34 @@ log = logging.getLogger(__name__)
 _env = os.environ.get("EDGE_USE_PIT_UNIVERSE")
 USE_PIT_UNIVERSE = (_env == "1") if _env in ("0", "1") else PIT.is_real_pit()
 
-# Survivorship stress mode. By default a name whose price series ends inside
-# the forward hold window is EXCLUDED from that rebalance's panel -- the
-# backtest never holds a stock through its delisting, which flatters returns.
-# Set EDGE_DELIST_HAIRCUT (e.g. "-0.30") to instead INCLUDE such names with
-# fwd_ret truncated at their last trade and the haircut applied to the final
-# price (a proxy for the delisting/OTC fade the data can't see). 0.0 = truncate
-# only. This is a research/stress knob; leave unset for product behaviour.
+# Delisting treatment. A name whose price series ends INSIDE the forward hold
+# window is included, with fwd_ret truncated at its last trade and this haircut
+# applied to that final price (a proxy for the delisting/OTC fade the data
+# cannot see). 0.0 = truncate only, no extra penalty. None = EXCLUDE such names
+# entirely.
+#
+# DEFAULT CHANGED 2026-07-29: None -> 0.0. Excluding them was LOOK-AHEAD -- the
+# panel dropped a name on date d because it knew the company would stop trading
+# within the next 42 days, which a real trader on date d does not know.
+# Measured: 18 of 1,640 positions (1.1%) are affected, and every one is an
+# ACQUISITION (Immunex->Amgen, BellSouth->AT&T, Genentech->Roche,
+# Schering-Plough->Merck, Anheuser-Busch->InBev, Motorola Mobility->Google...),
+# not a bankruptcy -- so the look-ahead was mostly skipping deal premiums and
+# biased AGAINST the model. Removing it costs 0.18pts of CAGR (18.47 -> 18.29%),
+# Sharpe 0.938 -> 0.934, drawdown unchanged. Cheap price for a number that is
+# structurally honest rather than quietly forward-looking.
+#
+# NOTE this haircut only reaches the PER-REBALANCE path (fwd_ret). The daily
+# curve the site reports comes from daily_return_matrix(), which forward-fills a
+# delisted price -- so a dead name is frozen at 0% return there rather than
+# marked down. Right for an acquisition (you hold cash at the deal price),
+# generous for a bankruptcy by the final gap. Bounded by the same 1.1% of
+# positions. See RESEARCH_RULES.md #4.
 _dh = os.environ.get("EDGE_DELIST_HAIRCUT")
 try:
-    DELIST_HAIRCUT: float | None = float(_dh) if _dh not in (None, "") else None
+    DELIST_HAIRCUT: float | None = float(_dh) if _dh not in (None, "") else 0.0
 except ValueError:
-    DELIST_HAIRCUT = None
+    DELIST_HAIRCUT = 0.0
 
 HOLD = 21                            # ~30 calendar days (a 1-month trading clock)
 LB = 251                             # trailing window for signals / beta
@@ -629,6 +645,8 @@ EDGE_SPEC = dict(
     # fell only ~10%. Portfolio beta is 0.82, so those were momentum unwinds,
     # not market events -- and momentum vol spikes before momentum crashes.
     # Measured on top of continuous_regime: CAGR 20.19 -> 18.47%, Sharpe 0.865
+    # (those figures predate the 2026-07-29 delisting-default change; the shipped
+    # spec now reads 18.29% / 0.934 with dying names included -- see DELIST_HAIRCUT)
     # -> 0.94, maxDD -39.35 -> -30.8%. It is the only lever tested that improved
     # ALL FIVE drawdown episodes. Response is monotone in the target (25/20/15%
     # -> -30.8/-25.5/-21.0% DD), i.e. no magic value was fitted.

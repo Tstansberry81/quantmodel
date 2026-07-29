@@ -60,8 +60,8 @@ MODEL_STATUS = {
                "survivorship-free data. The replacement ranks large caps by 12-1 "
                "momentum, caps each sector at 2 names, judges the 200-day-MA "
                "regime daily, and scales exposure toward 25% annualized "
-               "volatility. Backtest, net of 10bps, 1999-2026: 18.5%/yr vs the "
-               "S&P's 8.6%, Sharpe 0.94 vs 0.53, max drawdown -30.8% vs -55.3%. "
+               "volatility. Backtest, net of 10bps, 1999-2026: 18.3%/yr vs the "
+               "S&P's 8.6%, Sharpe 0.93 vs 0.53, max drawdown -30.8% vs -55.3%. "
                "That is a BACKTEST. The forward record below starts at these "
                "parameters and is the only out-of-sample evidence."),
 }
