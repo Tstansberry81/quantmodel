@@ -1089,7 +1089,9 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                  "cost_bps": s["cost_bps"], "stagger": stagger,
                  "growth_mix": gm, "growth_thresh": gt, "continuous_regime": cr,
                  # surfaced so the page describes what actually runs (rules #7)
-                 "sector_cap": sc_cap, "fcf_screen": fs},
+                 "sector_cap": sc_cap, "fcf_screen": fs,
+                 "vol_target": vt, "vol_lookback": vlb, "vol_cap": vcap,
+                 "delist_haircut": DELIST_HAIRCUT},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},
         "curves": {"dates": dstr, "model": mcurve,
                    "sp500": curve(sr)[1], "nasdaq": curve(nr)[1]},

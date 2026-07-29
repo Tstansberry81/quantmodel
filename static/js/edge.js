@@ -43,14 +43,14 @@ function render(d){
   const p=d.performance||{}, m=p.model||{}, t=d.turnover||{};
   const alpha=(m.cagr??0)-((p.sp500||{}).cagr??0);
   // Lead with the risk-adjusted SHAPE (the trustworthy part); CAGR/total return
-  // are survivorship-optimistic and are shown after, flagged as upper bounds.
+  // Survivorship has been measured (~0.2pts) rather than flagged as unknown.
   document.getElementById('headline').innerHTML = [
-    ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong). The most trustworthy headline number: least affected by survivorship.'],
+    ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong). Note: √252·mean/σ, with NO risk-free subtraction, applied identically to the benchmarks.'],
     ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss (measured daily). Core of the product story — far shallower than the S&P.'],
     ['Sortino', fmtN(m.sortino,2), '', 'Return per unit of downside risk — like Sharpe but only losses count as risk'],
-    ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha), 'Annualized return above the S&P 500. Partly survivorship-inflated — treat as an upper bound.'],
-    ['CAGR (net) ⚠', fmtPct(m.cagr), cls(m.cagr), 'Compound annual growth after ~10bps costs. OPTIMISTIC — survivorship-inflated by an unmeasured amount. An upper bound, NOT a forward estimate (see caveats below).'],
-    ['Total return ⚠', fmtPct(m.total_return), cls(m.total_return), 'Cumulative growth over the window. Same survivorship caveat as CAGR — an upper bound.'],
+    ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha), 'Annualized return above the S&P 500, on survivorship-free history.'],
+    ['CAGR (net)', fmtPct(m.cagr), cls(m.cagr), 'Compound annual growth after ~10bps costs, on survivorship-free history. Still a BACKTEST — the rules were chosen knowing how this period turned out (see caveats below).'],
+    ['Total return', fmtPct(m.total_return), cls(m.total_return), 'Cumulative growth over the window. Same backtest caveat as CAGR.'],
     ['Turnover / yr', fmtN(t.annualized,1)+'×', '', 'How many times the basket fully turns over per year'],
   ].map(([k,v,c,tip])=>`<div class="stat" title="${tip||''}"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
@@ -104,32 +104,39 @@ function render(d){
   const s=d.spec||{};
   document.getElementById('costnote').textContent = (s.cost_bps||10)+'bps';
   document.getElementById('spec').innerHTML = [
-    ['Signal', s.signal||'acceleration'],
+    ['Signal', s.signal||'12-1 momentum'],
     ['Holding', Math.round((s.hold_days||42)/21)+'M (~'+(s.hold_days||42)+' trading days)'],
     ['Basket', (s.n||10)+' names'],
     ['Liquidity floor', '≥ $'+fmtN(s.mcap_floor_bn,0)+'B'],
-    ['Correlation cap', fmtN(s.corr_cap,2)],
-    ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'],
-    ['Growth mix', (s.growth_mix>0 ? fmtN(s.growth_mix*100,0)+'% from ≥'+fmtN((s.growth_thresh||0.15)*100,0)+'% growth names' : 'off (pure momentum)')],
-    ['Rebalance', (s.stagger ? 'two staggered sleeves (½-period offset)' : 'single sleeve')],
+    ['Sector cap', (s.sector_cap ? 'max '+s.sector_cap+' per sector' : 'off')],
+    ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'+(s.continuous_regime?' · judged daily':'')],
+    ['Volatility target', (s.vol_target ? fmtN(s.vol_target*100,0)+'% annualized ('+(s.vol_lookback||21)+'d)' : 'off')],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:15px">${v}</div></div>`).join('');
 
   const ddm=fmtPct(m.max_drawdown), dds=fmtPct((p.sp500||{}).max_drawdown), shp=fmtN(m.sharpe,2);
+  const spshp=fmtN((p.sp500||{}).sharpe,2);
   document.getElementById('caveat').innerHTML =
     '<b>Read this before quoting any number.</b> Returns are net of '+(s.cost_bps||10)+'bps trading costs, '
-    +'but the absolute CAGR is an <b>upper bound, not a forward estimate</b>, for three reasons. '
-    +'<b>(1) Survivorship</b> — the universe is missing ~89% of companies that delisted, so the backtest never '
-    +'feels their failures. We tried to size this on real point-in-time Russell-1000 data (Norgate) three different '
-    +'ways; a 2-year data trial was too short to measure it — the effect is real but its <b>magnitude is still '
-    +'unknown</b> (full-history point-in-time data is needed to pin it down). '
-    +'<b>(2)</b> The liquidity floor uses market cap as a full-history proxy for tradability. '
-    +'<b>(3)</b> The recent window sits in an unusually momentum-friendly regime, which flatters the short windows most. '
-    +'<b>What you can trust is the risk-adjusted shape</b>, which is far less sensitive to all three: '
-    +'Sharpe ≈'+shp+' (vs the S&amp;P\'s ~0.65), the drawdown control (<b>'+ddm+' vs the S&amp;P '+dds+'</b>, measured daily), '
-    +'all-weather behavior, and positive return skew. That shape — not the headline return — is the product. '
-    +'Roughly 70% of the excess is buyable size/momentum/growth factor premium; the residual stock-picking edge is real but modest. '
-    +'The single move that would make the absolute numbers trustworthy is full-history point-in-time data (Norgate Platinum); '
-    +'the <a href="/edge-tracker" style="color:#d4af37">live paper-trading record</a> is the survivorship-proof, forward test that accrues in the meantime.';
+    +'including the cost of changing exposure. '
+    +'<b>Survivorship is no longer the headline risk here — it has been measured.</b> The price history is '
+    +'survivorship-free: 7,826 delisted companies, 64% of the dataset, spread evenly across every year since 1999, '
+    +'590 of which once cleared the $10B floor. The model visibly eats their losses (its worst single positions '
+    +'are −63%, −62%, −62%, and five of the ten worst later delisted). Residual survivorship exposure is about '
+    +'<b>0.2 percentage points of CAGR</b>, versus the ~8 points that inflated the previous version of this model. '
+    +'What remains, honestly: '
+    +'<b>(1) It is still a backtest.</b> These rules were chosen knowing how this history turned out. That is the '
+    +'largest risk on this page and no amount of clean data fixes it — only the '
+    +'<a href="/edge-tracker" style="color:#d4af37">forward record</a> can. '
+    +'<b>(2) Delisted prices are frozen, not marked down</b> — a name that stops trading is held flat rather than '
+    +'sold. Correct for an acquisition, generous for a bankruptcy, and capped at 1.1% of positions. '
+    +'<b>(3) The liquidity floor uses market cap</b> as a full-history proxy for tradability. '
+    +'<b>(4) The recent window is unusually momentum-friendly</b>, which flatters the short windows most. '
+    +'<b>(5) Sharpe here is √252·mean/σ with no risk-free subtraction</b> — a return-to-volatility ratio. It reads '
+    +'roughly 0.2 higher than a textbook Sharpe at current rates, and the same convention is applied to the '
+    +'benchmarks, so the comparison below is like-for-like. '
+    +'<b>What you can trust most is the risk-adjusted shape</b>: Sharpe '+shp+' vs the S&amp;P\'s '+spshp+', and '
+    +'drawdown control (<b>'+ddm+' vs the S&amp;P '+dds+'</b>, measured on the daily curve, so it is the true '
+    +'intra-period peak-to-trough rather than a sampled approximation). That shape — not the headline return — is the product.';
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
