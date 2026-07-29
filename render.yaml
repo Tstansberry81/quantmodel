@@ -17,6 +17,13 @@ services:
     startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 240"
     healthCheckPath: /api/meta
     envVars:
+      # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
+      # pit_universe auto-detects, and now that the artifact reports
+      # source=sharadar the SharadarAdapter activates -- so production would
+      # silently run a DIFFERENT universe from the one every backtest was
+      # validated against. The shipped model is the top-N-by-market-cap proxy.
+      - key: EDGE_USE_PIT_UNIVERSE
+        value: "0"
       - key: PYTHON_VERSION
         value: "3.12.7"
       - key: DATA_URL          # set in the dashboard: direct-download URL of data_bundle.zip

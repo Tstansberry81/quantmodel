@@ -1,5 +1,8 @@
 flask>=3.1
-pandas>=2.2
+pandas>=3.0,<4        # MUST match the machine that pickles the artifact: the
+                      # bundle is written with pandas 3.x and pandas 2.x cannot
+                      # reliably unpickle it (production hit RecursionError on a
+                      # payload that loads fine locally). Pin the major version.
 numpy>=2.0
 requests>=2.31
 scipy>=1.13

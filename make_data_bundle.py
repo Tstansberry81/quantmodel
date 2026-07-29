@@ -16,6 +16,7 @@ DATA_URL points somewhere authenticated. See sharadar_kit/CLAUDE.md.
 """
 from __future__ import annotations
 import json
+import json as _json
 import os
 import pathlib
 import sys
@@ -97,6 +98,15 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             continue
         if p.name == "backtest_data.pkl" and _trimmed is not None:
             z.write(_trimmed, p.relative_to(config.ROOT)); n += 1
+            continue
+        if p.name == "meta.json" and _trimmed is not None:
+            # Rewrite the count to match what actually ships. Copying the
+            # untrimmed meta made the live footer claim 12,164 names for a
+            # bundle carrying 2,976 -- a number the deployed site displays.
+            _mj = _json.loads(p.read_text(encoding="utf-8"))
+            _mj["n_names"] = _mj["universe_size"] = len(_keep)
+            _mj["deploy_trim_mcap"] = DEPLOY_MCAP_KEEP
+            z.writestr(str(p.relative_to(config.ROOT)), _json.dumps(_mj)); n += 1
             continue
         z.write(p, p.relative_to(config.ROOT)); n += 1
     # cached yfinance benchmarks/gold (yf_*.pkl) so charts work without live calls

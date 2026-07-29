@@ -9,6 +9,15 @@ Run:  python app.py     ->  http://127.0.0.1:5000
 from __future__ import annotations
 import argparse
 import os
+import sys
+
+# The artifact is a pandas-bearing pickle. Unpickling pandas objects walks deep
+# __reduce__/__setstate__ chains, and the depth differs across Python/pandas
+# versions -- the build machine and the host need not agree. Production hit
+# "RecursionError: maximum recursion depth exceeded" on a payload that
+# unpickles fine locally, so give the interpreter headroom before anything
+# imports pandas. 1000 (the default) is the only thing that was ever tight.
+sys.setrecursionlimit(20000)
 import time
 from collections import defaultdict
 from functools import lru_cache
