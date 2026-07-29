@@ -5,13 +5,27 @@ fresh host we download a prebuilt bundle from the DATA_URL env var and extract i
 If the artifacts are already present (e.g. local dev), this is a no-op.
 
 Create the bundle locally with `python make_data_bundle.py`, upload data_bundle.zip
-somewhere with a direct-download link (a GitHub Release asset is easiest), and set
-DATA_URL to that link in the Render dashboard.
+somewhere with a direct-download link, and set DATA_URL to it in the Render
+dashboard.
+
+PRIVATE REPO / LICENSED DATA
+----------------------------
+The artifacts are Sharadar-derived and Sharadar is licensed per seat, so the
+bundle must NOT sit anywhere public. This repo is private, which means its
+Release assets are private too -- and a private asset returns 404 to an
+unauthenticated request. Set GITHUB_TOKEN in the Render environment (a
+fine-grained PAT with Contents:read on this repo) and this fetcher authenticates.
+
+GitHub's REST download for a release asset also requires
+`Accept: application/octet-stream`; without it the API returns the asset's JSON
+metadata, which then fails to unzip with a confusing error.
 """
 from __future__ import annotations
-import io
 import os
+import shutil
 import sys
+import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -28,11 +42,40 @@ if not url:
           "will start but backtests/portfolio will be unavailable until data is provided.")
     sys.exit(0)
 
-print(f"[fetch_data] downloading data bundle from DATA_URL ...")
-req = urllib.request.Request(url, headers={"User-Agent": "quant-model-deploy"})
-with urllib.request.urlopen(req) as r:
-    data = r.read()
-print(f"[fetch_data] downloaded {len(data)/1e6:.0f} MB; extracting to {config.ROOT} ...")
-with zipfile.ZipFile(io.BytesIO(data)) as z:
-    z.extractall(config.ROOT)        # bundle contains data/artifacts/... and data/cache/...
-print("[fetch_data] done.", "OK" if art.exists() else "WARNING: backtest_data.pkl still missing — check the bundle layout.")
+headers = {"User-Agent": "quant-model-deploy"}
+token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("DATA_TOKEN") or "").strip()
+if token:
+    headers["Authorization"] = f"Bearer {token}"
+    if "api.github.com" in url:
+        headers["Accept"] = "application/octet-stream"
+
+print("[fetch_data] downloading data bundle from DATA_URL ...")
+req = urllib.request.Request(url, headers=headers)
+tmp = None
+try:
+    # Stream to disk rather than into memory: the bundle is ~1GB and the Render
+    # instance has 2GB total, so buffering it whole invites the OOM killer to
+    # take out the build.
+    with urllib.request.urlopen(req) as r, \
+            tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as fh:
+        tmp = fh.name
+        shutil.copyfileobj(r, fh, length=1 << 22)
+    size = os.path.getsize(tmp)
+    print(f"[fetch_data] downloaded {size/1e6:.0f} MB; extracting to {config.ROOT} ...")
+    with zipfile.ZipFile(tmp) as z:
+        z.extractall(config.ROOT)    # bundle holds data/artifacts/... and data/cache/...
+except urllib.error.HTTPError as e:
+    hint = ""
+    if e.code in (401, 403, 404):
+        hint = ("\n  -> this repo is PRIVATE, so its Release assets need auth. Set "
+                "GITHUB_TOKEN (Contents:read) in the Render environment, and point "
+                "DATA_URL at the api.github.com asset URL rather than the browser one.")
+    print(f"[fetch_data] ERROR {e.code} fetching the bundle.{hint}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    if tmp and os.path.exists(tmp):
+        os.remove(tmp)
+
+print("[fetch_data] done.",
+      "OK" if art.exists() else
+      "WARNING: backtest_data.pkl still missing — check the bundle layout.")
