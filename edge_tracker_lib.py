@@ -31,6 +31,9 @@ CORR_CAP = None          # off: it fights the signal (-2.5pts)
 SECTOR_CAP = 2           # max 2 names per sector (mirrors EDGE_SPEC)
 CORR_LOOKBACK = 126
 REGIME_EXPO = 0.25
+CONTINUOUS_REGIME = True # 2026-07-29: judge the 200dMA daily, not frozen at rebalance
+VOL_TARGET = 0.25        # scale exposure toward 25% annualized vol (de-lever only)
+VOL_LOOKBACK = 21
 COST_BPS = 10.0
 SIGNAL = {"ret_12_1": 1.0}
 _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
@@ -51,14 +54,15 @@ _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 # not yet beaten the index on a RISK-ADJUSTED basis out of sample.
 MODEL_STATUS = {
     "state": "live",
-    "since": "2026-07-27",
-    "headline": "New model live: 12-1 momentum, large caps, regime-gated.",
+    "since": "2026-07-29",
+    "headline": "12-1 momentum, large caps, regime-gated, volatility-targeted.",
     "detail": ("Acceleration was retired on 2026-07-27 after it was falsified on "
-               "survivorship-free data -- it returned 7.9%/yr against the S&P's "
-               "8.6% over the full period. The replacement ranks large caps by "
-               "12-1 momentum. Backtest, net of 10bps, 1999-2026: 22.1%/yr vs "
-               "8.6%, Sharpe 0.82 vs 0.53, max drawdown -47% vs -55%. That is a "
-               "BACKTEST. The forward record below starts today at these "
+               "survivorship-free data. The replacement ranks large caps by 12-1 "
+               "momentum, caps each sector at 2 names, judges the 200-day-MA "
+               "regime daily, and scales exposure toward 25% annualized "
+               "volatility. Backtest, net of 10bps, 1999-2026: 18.5%/yr vs the "
+               "S&P's 8.6%, Sharpe 0.94 vs 0.53, max drawdown -30.8% vs -55.3%. "
+               "That is a BACKTEST. The forward record below starts at these "
                "parameters and is the only out-of-sample evidence."),
 }
 GROWTH_MIX = 0.0                    # retired with accel (ranked NEGATIVELY)
@@ -293,9 +297,13 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
     trade is the panel's live rebalance, appended last and marked to market at
     the latest close. Returns the full list, newest last; the caller slices it
     to the requested window."""
+    # sector_cap MUST be passed: without it this log selected names the shipped
+    # model would never hold (the current-book view passes it, so the two views
+    # disagreed on what the book even is).
     bdates, gross, net, turn, spxf, ndxf, holds = E._edge_full(
         hold, n, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
-        tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH)
+        tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH,
+        sector_cap=SECTOR_CAP)
     T = len(net)
     log = []
 

@@ -33,7 +33,8 @@
     <div class="stat"><div class="k">Execution</div><div class="v" style="font-size:15px">enter next day (t+1)</div></div>
     <div class="stat"><div class="k">Liquidity floor</div><div class="v" style="font-size:15px">≥ $10B mcap</div></div>
     <div class="stat"><div class="k">Sector cap</div><div class="v" style="font-size:15px">max 2 per sector</div></div>
-    <div class="stat"><div class="k">Regime (below 200dMA)</div><div class="v" style="font-size:15px">25% invested</div></div>
+    <div class="stat"><div class="k">Regime (below 200dMA)</div><div class="v" style="font-size:15px">25% invested · judged daily</div></div>
+    <div class="stat"><div class="k">Volatility target</div><div class="v" style="font-size:15px">25% annualized</div></div>
     <div class="stat"><div class="k">Costs</div><div class="v" style="font-size:15px">10 bps / turnover</div></div>
   </div>
 </div>
@@ -69,12 +70,25 @@
 </div>
 
 <div class="panel eqsec">
-  <h2><span class="n">5</span> Execution, weighting &amp; regime overlay</h2>
+  <h2><span class="n">5</span> Execution, weighting &amp; the two risk overlays</h2>
   <p class="lead">Signals are formed at the close of day \(t\); the trade enters at the close of
-  \(t+1\). Positions are equal-weight. Exposure \(e\) is cut when the S&amp;P is below its 200-day average.</p>
+  \(t+1\). Positions are equal-weight. Two independent overlays then scale exposure, because they
+  see different dangers: the <b>regime gate</b> \(g\) watches the <em>market</em>, and the
+  <b>volatility target</b> \(v\) watches the <em>book itself</em>.</p>
   <div class="eqbox">$$w_i=\tfrac1n,\qquad
-  e(d)=\begin{cases}1 & \text{S\&P}(d)\ \ge\ \text{MA}_{200}(d)\\[2pt] 0.25 & \text{otherwise}\end{cases}$$</div>
-  <div class="eqbox">$$r_p(d)=e(d)\sum_i w_i\,r_i(d)\;+\;\big(1-e(d)\big)\,r_f$$</div>
+  g(d)=\begin{cases}1 & \text{S\&P}(d)\ \ge\ \text{MA}_{200}(d)\\[2pt] 0.25 & \text{otherwise}\end{cases}$$</div>
+  <p class="lead">The gate is evaluated <b>every day</b>, not frozen at the rebalance, so a market
+  that breaks its average mid-holding de-risks immediately rather than up to two months later.</p>
+  <p class="lead">The volatility target scales toward \(\sigma^\ast=25\%\) annualized using the
+  portfolio's own trailing 21-day volatility. It is capped at 1, so the model de-levers but never
+  borrows, and \(\hat\sigma\) is measured through \(d-1\) — the scale applied today cannot peek at
+  today's return.</p>
+  <div class="eqbox">$$\hat\sigma(d)=\sqrt{252}\cdot\text{sd}\big(r_p(d-21..d-1)\big),\qquad
+  v(d)=\min\!\left(1,\ \frac{\sigma^\ast}{\hat\sigma(d)}\right)$$</div>
+  <div class="eqbox">$$e(d)=g(d)\,v(d),\qquad
+  r_p(d)=e(d)\sum_i w_i\,r_i(d)\;+\;\big(1-e(d)\big)\,r_f\;-\;c\,\big|\Delta v(d)\big|$$</div>
+  <p class="lead">The final term charges the same 10bps to re-levering that a rebalance pays: changing
+  exposure is itself a trade, and a risk control that traded for free would look better than it is.</p>
 </div>
 
 <div class="panel eqsec">
@@ -114,7 +128,17 @@
     <li><b>Split the money evenly</b> across the 10 and hold for about two months before re-picking.</li>
     <li><b>Step mostly aside when the market is falling.</b> If the S&amp;P 500 is below its 200-day
       average, the model holds only 25% invested and the rest in cash. Momentum earns in rising markets
-      and suffers in falling ones, so this rule exists to avoid the worst of that.</li>
+      and suffers in falling ones, so this rule exists to avoid the worst of that. It checks this
+      <em>every day</em>, not just on re-pick day — otherwise a market that turned down could be ridden
+      all the way to the bottom of a two-month holding period.</li>
+    <li><b>Shrink the position size when the portfolio itself gets jumpy.</b> Separately from what the
+      market is doing, the model measures how violently its <em>own</em> holdings have been moving over
+      the last month. If that is running hotter than a 25%-a-year pace, it scales the whole book down
+      proportionally and parks the difference in cash. This exists because of a specific hole in the
+      rule above: the two worst losses in the model's history happened while the S&amp;P was
+      <em>above</em> its 200-day average and falling only about 10%. The market was fine; the momentum
+      stocks were not. A rule that only watches the market cannot see that coming, but the portfolio's
+      own turbulence can.</li>
   </ul>
 
   <h3>What each parameter means</h3>
@@ -129,7 +153,14 @@
       stock using a closing price and then also trade at that same price.</li>
     <li><b>10 bps costs</b> — 0.10% charged on the portion of the book that changes, approximating real
       trading friction.</li>
-    <li><b>25% in a downtrend</b> — the exposure kept while the market is below its 200-day average.</li>
+    <li><b>25% in a downtrend</b> — the exposure kept while the market is below its 200-day average,
+      checked daily rather than only when the book is re-picked.</li>
+    <li><b>25% volatility target</b> — the pace of movement the model tries to hold the portfolio to.
+      If its recent swings imply a faster pace, it invests proportionally less. It can only scale
+      <em>down</em>: it never borrows to bet more than 100%.</li>
+    <li><b>21-day volatility window</b> — how far back it looks to judge that pace. It deliberately
+      uses only days that have already finished, so it is never reacting to a move it has not lived
+      through yet.</li>
   </ul>
 
   <h3>How the backtest was built, and why that matters</h3>
@@ -152,14 +183,20 @@
   <ul>
     <li>It has no idea what any company does, or whether it earns money. A stock that rose for a year is
       bought whether the business is excellent or terrible.</li>
-    <li>It cannot anticipate a crash. The 200-day rule reacts <em>after</em> the market has already
-      turned down, so it limits damage rather than avoiding it.</li>
+    <li>It cannot anticipate a crash. Both safety rules react <em>after</em> trouble has started — the
+      200-day rule after the market has turned down, the volatility rule after the portfolio has already
+      had a rough month. They limit damage rather than avoiding it.</li>
     <li>Ten stocks is concentrated. Individual positions can and do fall heavily.</li>
+    <li>Scaling down has a price. In a sharp fall followed by a fast rebound, the model is holding cash
+      exactly when the recovery starts, and it re-invests only after the calm has lasted long enough to
+      show up in the measurement. Smoother is not the same as better.</li>
   </ul>
 
   <div class="warn">
-    <b>Honest limits.</b> The historical simulation returned about 19.5% a year against the S&amp;P 500's
-    8.6%, with a worst-case loss of 41% (the index itself lost 55% in 2008). Those are <b>simulated</b>
+    <b>Honest limits.</b> The historical simulation returned about 18.5% a year against the S&amp;P 500's
+    8.6%, with a worst-case loss of 31% (the index itself lost 55% in 2008). Adding the volatility
+    target gave up roughly 1.7 points of annual return to cut that worst case from 39% to 31% — a
+    deliberate trade, not a free improvement. Those are <b>simulated</b>
     results on past data, and the rules were chosen knowing how that period turned out. The previous
     version of this model — a different momentum rule — was retired in July 2026 after testing on
     survivorship-free data showed it <em>lost</em> to the index. Real forward-looking evidence begins the
