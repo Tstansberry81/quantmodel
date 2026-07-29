@@ -60,11 +60,17 @@ def _is_backup(name: str) -> bool:
     return any(m in name for m in _BACKUP_MARKERS)
 
 
-# Deploy-trim: the shipped model floors at $10B market cap, so a name that
-# NEVER reached DEPLOY_MCAP_KEEP can never be selected and only costs the host
-# memory and download time. Trimming well below the floor keeps the universe
-# ranking identical for everything the model can actually pick.
-DEPLOY_MCAP_KEEP = 5e9
+# Deploy-trim: the shipped model floors at $10B market cap (EDGE_SPEC
+# mcap_floor), so a name that NEVER reached that can never be selected -- it
+# only costs the host memory, download time and, critically, panel-build TIME:
+# daily_return_matrix is (trading days x names), so every surplus name is a
+# column of ~9,700 floats rebuilt on every cold start. Render's proxy times out
+# around 100s, so build cost is the binding constraint, not disk.
+#
+# Trimming AT the floor is safe for selection: load_edge_panel takes the top-N
+# by point-in-time market cap and then applies the floor, so dropping names that
+# never cleared the floor cannot change which names survive it.
+DEPLOY_MCAP_KEEP = 1e10
 _trimmed = None
 _live = config.ARTIFACT_DIR / "backtest_data.pkl"
 if _live.exists():
