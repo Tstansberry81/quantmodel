@@ -33,10 +33,10 @@ services:
       - key: EDGE_TRACKER_PATH
         value: /var/data/edge_tracker.json
       # Rebuilt panels land here too. The fingerprint hashes edge_lib.py, so any
-      # code change invalidates the panel shipped in the bundle -- and the bundle
-      # only moves when DATA_URL/DATA_VERSION are bumped by hand. Between a code
-      # deploy and a data re-upload, the panel WILL be rebuilt; this makes that
-      # cost land once rather than on every cold start.
+      # code change invalidates the panel shipped in the bundle, and code deploys
+      # independently of data. Between a code push and a bundle republish the
+      # panel WILL be rebuilt; this makes that cost land once, on the first cold
+      # start, rather than on every one.
       - key: EDGE_PANEL_CACHE_DIR
         value: /var/data
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
@@ -48,7 +48,14 @@ services:
         value: "0"
       - key: PYTHON_VERSION
         value: "3.12.7"
-      - key: DATA_URL          # set in the dashboard: direct-download URL of data_bundle.zip
+      # Point this at the release TAG, not an individual asset:
+      #   https://api.github.com/repos/<owner>/<repo>/releases/tags/data-v2-sharadar
+      # fetch_data.py finds data_bundle.zip underneath it and versions off the
+      # asset's own id+updated_at. Pinning an asset ID instead meant BOTH this
+      # and DATA_VERSION had to be hand-edited on every republish -- and if you
+      # forgot, the site quietly kept serving the previous bundle.
+      # Publish with `python publish_bundle.py` (always uses the fixed name).
+      - key: DATA_URL
         sync: false
       - key: FISCAL_API_KEY    # optional — only needed if you rebuild data on the host
         sync: false
