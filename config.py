@@ -61,9 +61,11 @@ UNIVERSE_SIZE = int(os.environ.get("UNIVERSE_SIZE", "1000"))
 ALLOWED_EXCHANGES = {"NASDAQ", "NYSE"}
 ALLOWED_COUNTRY = {"US"}
 REQUIRED_DATASETS = {"financials", "stock_prices"}
-# Include delisted/inactive names in the pool to reduce survivorship bias in the
-# backtest. (fiscal.ai only carries ~211 inactive names, mostly recent M&A, so
-# this reduces — does not eliminate — survivorship bias.)
+# Include delisted/inactive names in the pool. STALE NOTE (pre-2026-07): under
+# fiscal.ai this only "reduced" survivorship bias, because that vendor carried
+# ~111 inactive names and ALL of them died in 2024+. The live artifact is now
+# built by sharadar_ingest.py: 12,164 names of which 7,851 are delisted, back to
+# 1998 — survivorship bias is genuinely eliminated, not merely reduced.
 INCLUDE_INACTIVE = True
 
 # Backtest universe is rebuilt at each rebalance as the top-N names by
@@ -71,7 +73,9 @@ INCLUDE_INACTIVE = True
 BT_UNIVERSE_SIZE = int(os.environ.get("BT_UNIVERSE_SIZE", "500"))
 
 # ----------------------------------------------------------------------------
-# Benchmarks + gold (sourced from yfinance; fiscal.ai has no index/ETF prices).
+# Benchmarks (yfinance — Sharadar's SFP fund table isn't ingested; only these
+# few index/ETF series are needed). GOLD is legacy: the Edge holds no gold
+# sleeve, it survives because edge_data.benchmarks() still returns the key.
 # Returns are measured on a TOTAL-RETURN basis (dividends reinvested), so the
 # benchmarks are total-return series for a fair, like-for-like comparison.
 # ----------------------------------------------------------------------------
@@ -82,9 +86,11 @@ BENCH_NASDAQ_LABEL = "Nasdaq-100 (TR)"
 GOLD_SYMBOL = "GLD"           # SPDR Gold Shares (tradeable proxy for gold)
 RISK_FREE_ANNUAL = 0.04       # for Sharpe/Sortino
 
-# Price/return basis. Stock prices for all price-derived factors and the return
-# columns come from yfinance adjusted close (total return: splits + dividends).
-# fiscal.ai remains the source for fundamentals.
+# Price/return basis: TOTAL RETURN (splits + dividends reinvested). Stock prices
+# and fundamentals both now come from SHARADAR via sharadar_ingest.py — SEP
+# `closeadj` for prices, SF1/ART (filing-dated) plus DAILY for point-in-time
+# multiples. The FISCAL_* settings above are retained only for the legacy
+# research scripts; the shipped model does not read fiscal.ai.
 RETURN_BASIS = "total"
 
 # Portfolio shape
