@@ -119,12 +119,19 @@ def write_local(payload: str, out: str | None = None) -> str:
 def push_to_github(payload: str, message: str) -> dict:
     """Commit vision_data.js to the Vision repo via the GitHub contents API.
     Needs GITHUB_TOKEN (contents:write). Repo/branch/path overridable via env."""
-    token = os.environ.get("GITHUB_TOKEN")
+    # Two DIFFERENT credentials, deliberately. GITHUB_TOKEN is the deploy token:
+    # it only needs Contents:READ on the private quantmodel repo so fetch_data can
+    # pull the data bundle. Publishing needs Contents:WRITE on a DIFFERENT,
+    # public repo. Fine-grained PATs are per-repository, so a token scoped to
+    # quantmodel returns 404 here -- not 403 -- which reads like "no such repo"
+    # rather than "no permission" and is why this failed silently-looking.
+    # Prefer VISION_GITHUB_TOKEN so the deploy token never needs write anywhere.
+    token = os.environ.get("VISION_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
     repo = os.environ.get("VISION_REPO", "Tstansberry81/vision")
     branch = os.environ.get("VISION_BRANCH", "main")
     path = os.environ.get("VISION_DATA_PATH", "vision_data.js")
     if not token:
-        return {"pushed": False, "reason": "no GITHUB_TOKEN"}
+        return {"pushed": False, "reason": "no VISION_GITHUB_TOKEN / GITHUB_TOKEN"}
     import requests
     api = f"https://api.github.com/repos/{repo}/contents/{path}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
@@ -138,7 +145,14 @@ def push_to_github(payload: str, message: str) -> dict:
         body["sha"] = sha
     p = requests.put(api, json=body, headers=headers, timeout=20)
     if p.status_code >= 300:
-        return {"pushed": False, "reason": f"GitHub {p.status_code}: {p.text[:200]}"}
+        hint = ""
+        if p.status_code in (403, 404):
+            which = "VISION_GITHUB_TOKEN" if os.environ.get("VISION_GITHUB_TOKEN") else "GITHUB_TOKEN"
+            hint = (f" — {which} cannot write to {repo}. Fine-grained PATs are "
+                    f"per-repository and return 404 (not 403) for repos outside "
+                    f"their scope, so this looks like a missing repo. Give a token "
+                    f"Contents:write on {repo} and set VISION_GITHUB_TOKEN.")
+        return {"pushed": False, "reason": f"GitHub {p.status_code}{hint}"}
     return {"pushed": True, "commit": (p.json().get("commit") or {}).get("html_url"),
             "repo": repo, "branch": branch}
 

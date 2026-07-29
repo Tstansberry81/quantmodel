@@ -57,5 +57,12 @@ services:
       # Publish with `python publish_bundle.py` (always uses the fixed name).
       - key: DATA_URL
         sync: false
+      # Publishing to the PUBLIC Vision repo needs Contents:write there. Kept
+      # separate from GITHUB_TOKEN on purpose: the deploy token only needs
+      # Contents:READ on this private repo, and widening it would give the
+      # data-fetch path write access it never needs. Optional -- without it the
+      # "Sync to Vision" button reports the failure instead of pretending.
+      - key: VISION_GITHUB_TOKEN
+        sync: false
       - key: FISCAL_API_KEY    # optional — only needed if you rebuild data on the host
         sync: false
