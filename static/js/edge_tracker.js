@@ -6,7 +6,6 @@ const sgnPct = v => v==null||isNaN(v) ? "—" : (v>=0?"+":"")+(v*100).toFixed(1)
 const _O = loadEdgeOpts();   // shared with the Edge backtest page (localStorage)
 let WINDOW = _O.window;      // paper-log horizon: 1Y/2Y/5Y/MAX
 let HOLD = _O.hold;          // rebalance clock: 21/42/63/126 = 1M/2M/3M/6M
-let MIX = _O.mix;            // growth mix: share of basket from >=15%-rev-growth names
 let NSIZE = _O.n;            // basket size 5..10 (product = 10; n=7 = paper-tracked research book)
 
 async function run(){
@@ -15,7 +14,7 @@ async function run(){
   status.textContent='Loading the Edge tracker…';
   document.getElementById('app').style.display='none';
   try{
-    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&mix=${MIX}&n=${NSIZE}`);
+    const r = await fetch(`/api/edge_tracker?hold=${HOLD}&window=${WINDOW}&n=${NSIZE}`);
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Tracker failed'; return; }
     render(d);
@@ -41,13 +40,19 @@ function render(d){
     }
   }
 
+  // These headline cards used to read "Closed paper trades: 164 / Beat S&P
+  // (hit rate)" straight off the BACKTEST-seeded stats -- presenting simulation
+  // as the forward record in the largest type on the page. Forward and
+  // simulated are now separate cards, each labelled for what it is.
+  const fst = d.forward_stats || {};
   document.getElementById('headline').innerHTML = [
     ['Current book', (d.current_book||[]).length+' names', ''],
     ['Book date', d.book_date||'—', ''],
-    ['Closed paper trades', fmtN(s.n_closed,0), ''],
-    ['Beat S&P (hit rate)', fmtPct(s.hit_rate), cls((s.hit_rate||0)-0.5)],
-    ['Avg excess / trade', sgnPct(s.avg_excess), cls(s.avg_excess)],
-    ['Live snapshots', fmtN(s.n_snapshots,0), ''],
+    ['Forward record', `${fmtN(fst.n_closed,0)} closed · ${fmtN(fst.n_open,0)} open`, ''],
+    ['Forward hit rate', fst.n_closed ? fmtPct(fst.hit_rate) : 'no data yet',
+      fst.n_closed ? cls((fst.hit_rate||0)-0.5) : ''],
+    ['Backtest hit rate (sim)', fmtPct(s.hit_rate), cls((s.hit_rate||0)-0.5)],
+    ['Backtest trades (sim)', fmtN(s.n_closed,0), ''],
   ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
   // ---- current book table ----
@@ -55,7 +60,6 @@ function render(d){
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
      <td>${fmtPct(b.weight)}</td><td class="${cls(b.signal)}">${fmtN(b.signal,2)}</td>
      <td class="${cls(b.ret_todate)}">${b.ret_todate==null?'—':sgnPct(b.ret_todate)}</td></tr>`).join('');
-  const mixTxt = spec.growth_mix>0 ? `${Math.round(spec.growth_mix*100)}% growth mix` : 'pure momentum';
   const recTxt = s.record==='paper-n7'
     ? ' · n=7 research candidate — its forward record accrues alongside the product book'
     : (spec.n===10 ? '' : ' · exploratory basket size (no forward record)');
@@ -69,8 +73,8 @@ function render(d){
     : '';
   document.getElementById('bookmeta').textContent =
     `${heldTxt} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
-    +`ranked by ${spec.signal} · ${mixTxt} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
-    +`corr cap ${fmtN(spec.corr_cap,2)}${recTxt}${regimeTxt}.`;
+    +`ranked by ${spec.signal} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
+    +`max ${spec.sector_cap} per sector, ${fmtN(spec.vol_target*100,0)}% vol target${recTxt}${regimeTxt}.`;
 
   // ---- FORWARD record (the only out-of-sample evidence) ----
   // Rendered above and apart from the backtest-seeded log below. Mixing them
@@ -134,10 +138,11 @@ function render(d){
   });
   const wlabel = WINDOW==='MAX' ? 'full history' : `last ${WINDOW}`;
   document.getElementById('logmeta').textContent =
-    `${wlabel} · showing ${log.length} of ${s.n_total} rebalances (${Math.round((spec.hold_days||42)/21)}M clock) · ${s.n_closed} closed paper trades · `
+    `${wlabel} · showing ${log.length} of ${s.n_total} SIMULATED rebalances (${Math.round((spec.hold_days||42)/21)}M clock) · `
     +`beat the S&P ${fmtPct(s.hit_rate)} of the time · avg excess ${sgnPct(s.avg_excess)}/trade `
     +`(avg Edge ${sgnPct(s.avg_edge_ret)} vs S&P ${sgnPct(s.avg_sp_ret)}). `
-    +`Returns are NET of ${spec.cost_bps}bps costs. History seeded from the backtest; live snapshots accrue forward from ${s.first_snapshot}.`;
+    +`Returns are NET of ${spec.cost_bps}bps costs. These are backtest results, not a forward record — `
+    +`that lives in the panel above.`;
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -152,12 +157,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#holdbtns button').forEach(x=>x.classList.remove('active'));
       b.classList.add('active'); HOLD=+b.dataset.h; saveEdgeOpt('hold',HOLD); run();
-    });
-  });
-  document.querySelectorAll('#mixbtns button').forEach(b=>{
-    b.addEventListener('click',()=>{
-      document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
     });
   });
   document.querySelectorAll('#nbtns button').forEach(b=>{

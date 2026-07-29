@@ -14,10 +14,12 @@ async function safeJson(r) {
 }
 
 // ---- shared model options (synced across the Edge backtest + Edge Tracker) ----
-// Both pages read/write the same four controls from localStorage so a setting
-// picked on one page carries over to the other.
+// Both pages read/write the same three controls from localStorage so a setting
+// picked on one page carries over to the other. (`mix` was removed with the
+// retired growth gate; a stale value left in a returning visitor's
+// localStorage is simply ignored.)
 const EDGE_OPTS_KEY = 'edgeOpts';
-const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, mix: 0.0, n: 10 };
+const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, n: 10 };
 
 function loadEdgeOpts() {
   try {
@@ -39,7 +41,6 @@ function syncEdgeBtns() {
   const o = loadEdgeOpts();
   [['#windowbtns', 'w', String(o.window)],
    ['#holdbtns', 'h', String(o.hold)],
-   ['#mixbtns', 'm', String(o.mix)],
    ['#nbtns', 'n', String(o.n)]].forEach(([sel, attr, val]) => {
     document.querySelectorAll(sel + ' button').forEach(b =>
       b.classList.toggle('active', b.dataset[attr] === val));

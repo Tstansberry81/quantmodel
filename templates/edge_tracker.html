@@ -3,7 +3,10 @@
 {% block nav_edge_tracker %}active{% endblock %}
 {% block content %}
 <h1>Edge Tracker <span class="small">— live paper portfolio</span></h1>
-<p class="sub">The position the Edge is holding right now &mdash; opened at the most recent rebalance and marked to the latest close &mdash; plus a running paper-trading log: every finished rebalance and its realized return vs the S&amp;P, tracked forward to validate the backtest out-of-sample.</p>
+<p class="sub">The position the Edge is holding right now &mdash; opened at the most recent rebalance and marked to
+the latest close &mdash; plus two separate records below: a <b>forward</b> log of rebalances written down before
+their outcome was known, and a <b>backtest-seeded</b> history of every simulated rebalance since 1999. Only the
+first is out-of-sample evidence.</p>
 
 <div class="panel">
   <h2>How The Edge picks &mdash; the model</h2>
@@ -66,17 +69,6 @@
     <button data-h="126">6M</button>
   </div>
   <span class="small">rebalance cadence (months) — drives the whole book + log</span>
-</div>
-<div class="controls" style="margin-bottom:18px">
-  <label class="small">Growth mix:</label>
-  <div class="btnrow" id="mixbtns">
-    <button data-m="0">Off</button>
-    <button data-m="0.25">25%</button>
-    <button data-m="0.5">50%</button>
-    <button data-m="0.75" class="active">75%</button>
-    <button data-m="1">100%</button>
-  </div>
-  <span class="small">share of the basket drawn from ≥15% YoY-revenue-growth names (rest = pure momentum)</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Basket size:</label>

@@ -37,19 +37,6 @@ Returns are <b>net of {{ '' }}<span id="costnote">10bps</span> trading costs</b>
   <span class="small">rebalance cadence (months)</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
-  <label class="small">Growth mix:</label>
-  <div class="btnrow" id="mixbtns">
-    <button data-m="0" class="active">Off</button>
-    <button data-m="0.25">25%</button>
-    <button data-m="0.5">50%</button>
-    <button data-m="0.75">75%</button>
-    <button data-m="1">100%</button>
-  </div>
-  <span class="small">RETIRED — kept for exploration only. On survivorship-free data the
-  revenue-growth gate ranked <b>negatively</b> (−1.61%/rebalance, t=−2.5, negative in both halves
-  of the sample), so the shipped model runs it Off.</span>
-</div>
-<div class="controls" style="margin-bottom:18px">
   <label class="small">Basket size:</label>
   <div class="btnrow" id="nbtns">
     <button data-n="5">5</button>
@@ -68,7 +55,7 @@ Returns are <b>net of {{ '' }}<span id="costnote">10bps</span> trading costs</b>
   <span class="small">the dollar value of this stake over the selected backtest window</span>
 </div>
 
-<div id="status" class="loading">Running the Edge backtest… (first run builds the panel, ~1–2 min)</div>
+<div id="status" class="loading">Running the Edge backtest…</div>
 
 <div id="app" style="display:none">
   <div class="cards" id="headline"></div>

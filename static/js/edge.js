@@ -6,7 +6,6 @@ const fmtUSD = n => n==null||isNaN(n) ? "—" : "$"+Math.round(n).toLocaleString
 const _O = loadEdgeOpts();    // shared with the Edge Tracker (localStorage)
 let WINDOW = _O.window;
 let HOLD = _O.hold;
-let MIX = _O.mix;             // growth mix: share of basket from >=15%-rev-growth names
 let NSIZE = _O.n;             // basket size 5..10 (product = 10; research favors 7)
 let AMOUNT = 10000;           // starting capital for the dollar-value view (client-side only)
 let LAST = null;              // last backtest response, so the amount can re-render without refetch
@@ -28,7 +27,7 @@ async function run(){
   document.getElementById('app').style.display='none';
   try{
     const r = await fetch('/api/edge_backtest',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX, n:NSIZE})});
+      body:JSON.stringify({window:WINDOW, hold:HOLD, n:NSIZE})});
     const d = await safeJson(r);
     if(!d.ok){ status.className='err'; status.textContent=d.reason||'Backtest failed'; return; }
     LAST=d; render(d);
@@ -153,12 +152,6 @@ document.addEventListener('DOMContentLoaded',()=>{
       b.classList.add('active'); HOLD=+b.dataset.h; saveEdgeOpt('hold',HOLD); run();
     });
   });
-  document.querySelectorAll('#mixbtns button').forEach(b=>{
-    b.addEventListener('click',()=>{
-      document.querySelectorAll('#mixbtns button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active'); MIX=+b.dataset.m; saveEdgeOpt('mix',MIX); run();
-    });
-  });
   document.querySelectorAll('#nbtns button').forEach(b=>{
     b.addEventListener('click',()=>{
       document.querySelectorAll('#nbtns button').forEach(x=>x.classList.remove('active'));
@@ -178,14 +171,14 @@ document.addEventListener('DOMContentLoaded',()=>{
     sync.addEventListener('click', async ()=>{
       const months=Math.round(HOLD/21);
       const ok=confirm(`Sync the CURRENT backtest to the Vision product?\n\n`
-        +`• Window: ${WINDOW}\n• Rebalance: ${months}-month clock\n• Growth mix: ${Math.round(MIX*100)}%\n• Basket: 10 stocks (Vision always ships the product book)\n\n`
+        +`• Window: ${WINDOW}\n• Rebalance: ${months}-month clock\n• Basket: 10 stocks (Vision always ships the product book)\n\n`
         +`This regenerates Vision's data and pushes it live (updates the book + curves).`);
       if(!ok) return;
       const msg=document.getElementById('syncMsg');
       sync.disabled=true; msg.className='small'; msg.textContent='Syncing to Vision…';
       try{
         const r=await fetch('/api/sync_vision',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({window:WINDOW, hold:HOLD, mix:MIX})});
+          body:JSON.stringify({window:WINDOW, hold:HOLD})});
         const d=await safeJson(r);
         if(d.ok){
           msg.className='small pos';
