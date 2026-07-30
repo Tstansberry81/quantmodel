@@ -242,8 +242,36 @@ def _warm_caches():
         app.logger.exception("cache warm failed")
 
 
-if os.environ.get("EDGE_WARM_ON_BOOT", "1") == "1":
-    import threading
+# WARM AFTER THE FORK, NEVER AT IMPORT.
+#
+# This used to start the warm thread at module import. gunicorn imports the app
+# and then FORKS its worker, and a fork copies the lock in whatever state it held
+# at that instant while NOT copying the thread that held it. The warm thread took
+# _COMPUTE_LOCK, the fork happened, and the child inherited a lock that was held
+# by a thread which did not exist there. Nothing could ever release it: every
+# compute request waited the full timeout and failed, forever, on a healthy
+# instance with a correctly matching panel.
+#
+# That is what /api/diag finally showed -- compute_lock_held=True with only two
+# live threads, neither of them holding it. It is also why "Your service is live"
+# preceded "Detected service running on port 10000" by five minutes.
+#
+# Starting it from the first request guarantees we are past the fork, and works
+# identically under `python app.py`.
+_WARM_LOCK = threading.Lock()
+_WARM_STARTED = False
+
+
+@app.before_request
+def _warm_once():
+    """Kick the boot warm-up on the first request, post-fork."""
+    global _WARM_STARTED
+    if _WARM_STARTED or os.environ.get("EDGE_WARM_ON_BOOT", "1") != "1":
+        return
+    with _WARM_LOCK:
+        if _WARM_STARTED:
+            return
+        _WARM_STARTED = True
     threading.Thread(target=_warm_caches, name="edge-warm", daemon=True).start()
 
 
