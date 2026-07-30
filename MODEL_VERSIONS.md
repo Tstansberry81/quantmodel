@@ -51,6 +51,56 @@ and 0.05 Sharpe, and removed 47% of the universe.
 
 **Not yet confirmed out of sample.** Only the forward record can do that.
 
+### Tested after v5 and REJECTED — revenue-growth gates (2026-07-30)
+
+`rev_growth` is 96% populated and stored as a fraction (median +7.9% YoY).
+
+**Requiring growth does not work**, at any bar, on top of v5:
+
+| gate | CAGR | Sharpe | maxDD |
+|---|---|---|---|
+| v5 base | 17.11% | 0.910 | −28.58% |
+| rev growth > 0 | 15.21% | 0.835 | −28.63% |
+| rev growth ≥ 15% | 14.69% | 0.805 | −29.49% |
+| rev growth ≥ 25% | 13.20% | 0.744 | −39.49% |
+| net income growth > 0 | 12.90% | 0.748 | −32.36% |
+
+This reproduces v2's `growth_mix` rejection, but as a GATE, on the current
+signal, grid and base — a much stronger result than the original. Mechanically
+it is near-redundant: `fcf_positive` already removes most of what "growing
+healthily" proxies for, and the gate pays for the overlap in lost return. The
+≥25% bar also failed to fill 10 names at 9 rebalances, so part of that row is
+the sector cap back-filling rather than the screen working.
+
+**Excluding hypergrowth looked excellent and still failed.** Capping YoY revenue
+growth at 50% gave 17.92% / 0.967 / −23.43% — better than v5 on every axis. It
+was rejected on the threshold response:
+
+| cap | CAGR | Sharpe | maxDD |
+|---|---|---|---|
+| none | 17.11% | 0.910 | −28.58% |
+| >200% | 16.43% | 0.884 | −27.67% |
+| >150% | 16.18% | 0.873 | −27.12% |
+| >100% | 16.40% | 0.885 | −26.44% |
+| >75% | 16.78% | 0.906 | −22.75% |
+| **>50%** | **17.92%** | **0.967** | −23.43% |
+| >40% | 18.16% | 0.986 | −22.65% |
+| >30% | 16.53% | 0.927 | −24.99% |
+
+Every loose cap is WORSE than base on CAGR; the gain exists only in a narrow
+40–50% band and collapses by 30%. That is a peak with worse neighbours on both
+sides — a fitted number, not a mechanism. Contrast `vol_target`, whose monotone
+25/20/15/12 response is why that lever is trusted.
+
+Its sub-era record also fails on magnitude even while passing on count: 4/4 eras
+"better", but by 0.1 / 0.6 / 0.8pts and then 7.6pts in 2020-2026. One episode
+wearing a consistency badge. And on the live book it drops MU mid-memory-cycle
+for a slower-growing competitor in the same industry.
+
+**Lesson recorded:** "better in most sub-eras" is too weak a bar on its own.
+Check the MAGNITUDE per era — an effect concentrated in one period is one
+observation, however many buckets it is sliced into.
+
 ---
 
 ## v4 — monthly calendar rebalance · 2026-07-30

@@ -51,6 +51,19 @@ Rules that follow:
   factors, or the same effect across independent cuts. One hot cell is noise.
 - Report how many names a screen passes. A screen passing 4 names is an
   anecdote, not a strategy.
+- **Wiggle the threshold.** For any cutoff, sweep it and look at the SHAPE. A
+  real mechanism gives a smooth response — `vol_target` at 25/20/15/12% traces a
+  monotone drawdown curve, which is the reason that lever is trusted. A fitted
+  number gives a peak at the value you happened to try first with worse
+  neighbours on both sides. The hypergrowth cap died here: excluding YoY revenue
+  growth above 50% beat the base on every axis, but every looser cap
+  (75/100/150/200%) was *worse than base on CAGR* and 30% collapsed again. No
+  mechanism is harmless at 100%, decisive at 45%, and harmless at 30%.
+- **Count sub-eras, then check their MAGNITUDES.** "Better in 4 of 4 eras" is
+  worth little if three move by 0.1–0.8pts and the fourth by 7.6pts — that is
+  one episode sliced into buckets, not four agreements. The solvency screens
+  passed this properly (5.1pts in 2013-19 *and* 17.1pts in 2020-26); the
+  hypergrowth cap did not, while passing the naive count.
 
 ## 4. Point-in-time discipline is not optional
 
