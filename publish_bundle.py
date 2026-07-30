@@ -89,7 +89,35 @@ def _check_panel_matches_code() -> None:
                  "  The bundled panel is fingerprinted against your working tree; the\n"
                  "  host will run the committed file and reject it. Commit, rebuild,\n"
                  "  then publish.")
-    print(f"  pre-flight OK — bundle carries {want} and edge_lib.py is committed")
+    # THE BUILD KNOBS, not just the filename. The filename encodes hold /
+    # universe / offset / rebal_months -- it does NOT encode USE_PIT_UNIVERSE or
+    # DELIST_HAIRCUT, which _panel_fingerprint also hashes. A panel built on a
+    # machine that auto-detects a PIT source carries the right NAME and the wrong
+    # KEY, so the host rejects it silently and rebuilds on EVERY cold start. That
+    # went unnoticed for months and was the real reason production was slow.
+    #
+    # The fingerprint itself cannot be recomputed here: it hashes the artifact
+    # size and meta.json, and make_data_bundle swaps the deploy-trimmed copies
+    # back out after building. So the build records its knobs and this checks
+    # those against what render.yaml pins.
+    import json as _js
+    with zipfile.ZipFile(BUNDLE) as z:
+        manifest = next((n for n in z.namelist() if n.endswith("panel_build.json")), None)
+        if manifest is None:
+            sys.exit("publish_bundle: REFUSING — no panel_build.json in the bundle.\n"
+                     "  Rebuild with make_data_bundle.py (it records the build knobs).")
+        knobs = _js.loads(z.read(manifest))
+    if knobs.get("use_pit_universe") is not False:
+        sys.exit(f"publish_bundle: REFUSING — the panel was built with "
+                 f"USE_PIT_UNIVERSE={knobs.get('use_pit_universe')}, but production "
+                 f"pins EDGE_USE_PIT_UNIVERSE=0.\n"
+                 f"  The host would reject this panel and rebuild on every cold "
+                 f"start — and it is a different universe besides.")
+    if knobs.get("hold") != want_hold:
+        sys.exit(f"publish_bundle: REFUSING — panel built for hold={knobs.get('hold')}, "
+                 f"spec says {want_hold}.")
+    print(f"  pre-flight OK — {want}, built with USE_PIT_UNIVERSE=False, "
+          f"edge_lib.py committed")
 
 
 def main() -> None:

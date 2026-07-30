@@ -129,8 +129,28 @@ if os.environ.get("SKIP_PANEL_PRECOMPUTE") != "1":
             shutil.copy(_live_art, _bak_art); shutil.copy(_trimmed, _live_art)
             _bak_meta = _mp.read_bytes(); _mp.write_bytes(_meta_bytes)
 
+        # BUILD THE PANEL UNDER PRODUCTION'S UNIVERSE RULE, NOT THIS MACHINE'S.
+        #
+        # edge_lib decides USE_PIT_UNIVERSE at import from whatever pit_universe
+        # auto-detects. This machine HAS a real PIT source, so it defaults True;
+        # render.yaml pins EDGE_USE_PIT_UNIVERSE=0 so production runs the
+        # top-N-by-market-cap proxy every backtest was validated against.
+        #
+        # _panel_fingerprint hashes that flag. A panel built here with PIT=True
+        # therefore NEVER matches on the host -- the shipped panel was rejected on
+        # arrival and every cold start rebuilt it from scratch, for months,
+        # however many times the bundle was republished. It was also the wrong
+        # universe: PIT keeps every member (~4,169 rows/rebalance) while the proxy
+        # caps at 1,000, so the two are different models, not just different keys.
+        #
+        # Set BEFORE importing edge_lib: the flag is read at import time.
+        os.environ["EDGE_USE_PIT_UNIVERSE"] = "0"
         import edge_lib as E
+        if E.USE_PIT_UNIVERSE:                      # belt and braces if imported earlier
+            E.USE_PIT_UNIVERSE = False
         E.reset_caches()
+        print(f"      building panel with USE_PIT_UNIVERSE={E.USE_PIT_UNIVERSE} "
+              f"(must match render.yaml's EDGE_USE_PIT_UNIVERSE=0)")
         for _pth in sorted(config.CACHE_DIR.glob("panel_h*.pkl")):
             _pth.unlink()          # never ship a panel from a previous artifact
         _t0 = time.time()
@@ -141,6 +161,19 @@ if os.environ.get("SKIP_PANEL_PRECOMPUTE") != "1":
         # every start, with a shipped panel sitting right next to it, and no error.
         E.load_edge_panel(universe=E.UNIVERSE, offset_days=0,
                           **E.clock_spec(E.EDGE_SPEC["hold"]))
+        # Record WHAT THE PANEL WAS BUILT UNDER, so publish_bundle can refuse a
+        # panel the host will reject. The fingerprint cannot be recomputed after
+        # the fact -- it hashes the artifact size and meta.json, and both are
+        # swapped back to the full research copies below -- so the knobs are
+        # recorded instead. USE_PIT_UNIVERSE is the one that silently differed:
+        # this machine auto-detects a PIT source, production pins it off.
+        _clock = E.clock_spec(E.EDGE_SPEC["hold"])
+        (config.ARTIFACT_DIR / "panel_build.json").write_text(_json.dumps({
+            "use_pit_universe": bool(E.USE_PIT_UNIVERSE),
+            "delist_haircut": E.DELIST_HAIRCUT,
+            "hold": _clock["hold"], "rebal_months": _clock["rebal_months"],
+            "universe": E.UNIVERSE, "lb": E.LB,
+        }), encoding="utf-8")
         _panels = sorted(config.CACHE_DIR.glob("panel_h*.pkl"))
         print(f"precomputed panel: {', '.join(p.name for p in _panels)} "
               f"({sum(p.stat().st_size for p in _panels)/1e6:.0f}MB, {time.time()-_t0:.0f}s)")
