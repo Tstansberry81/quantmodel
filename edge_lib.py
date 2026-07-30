@@ -377,6 +377,14 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
         ndxf.append(_bench_fwd_exit(ndx, d, d_next))
         ma200_on.append(regime_on)
 
+    # Release the per-name price/return/fundamental arrays before assembling the
+    # result. They are dead once the loop ends, but Python holds the dict alive
+    # until this function returns -- so without this the process briefly carries
+    # BOTH the full input arrays and the finished panel, at exactly the moment it
+    # is already at its high-water mark. On a 2Gi instance that overlap is not
+    # affordable (see the 2026-07-30 oomKilled event).
+    prep.clear()
+
     sectors = sorted({s for df in panels for s in df["sector"].unique() if str(s).lower() != "unknown"})
     return EdgePanel(panels, pd.DatetimeIndex(bdates), np.array(spxf), np.array(ndxf),
                      np.array(ma200_on, bool), mret_full, sectors, hold,
@@ -454,11 +462,39 @@ def _panel_cache_paths(hold: int, universe: int, offset_days: int,
     return reads, persist
 
 
-@lru_cache(maxsize=10)
+# Serializes panel BUILDS across threads. lru_cache holds no lock across the
+# wrapped call, so with gunicorn --threads 4 the boot warm-up thread and an
+# incoming request both miss, and both build the same panel at once -- doubling
+# the peak memory of the single most memory-hungry operation in the process.
+# That OOM-killed the 2Gi instance on 2026-07-30 (server_failed, oomKilled)
+# the first time a request landed while the warm thread was still building.
+#
+# The lock is only taken on a MISS, so the hot path (cache hit) is untouched.
+# After acquiring it we re-check the disk, because the thread we queued behind
+# has very likely just written the panel we want -- classic double-checked
+# locking, and it turns the second builder into a fast disk read.
+_PANEL_BUILD_LOCK = threading.Lock()
+# Hand-off for threads that queued on the lock, keyed by fingerprint. The
+# re-check after acquiring reads from DISK, which is the fast path in production
+# -- but if the disk write failed (read-only mount, no disk attached, full
+# volume) every queued thread would rebuild in turn. Serialized, so never an OOM,
+# but needlessly slow. These are the same objects lru_cache already retains, so
+# holding references costs nothing; bounded anyway, since a stale entry here
+# would outlive its usefulness.
+_PANEL_JUST_BUILT: dict[str, EdgePanel] = {}
+
+
+@lru_cache(maxsize=3)
 def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0,
                     rebal_months: int | None = REBAL_MONTHS) -> EdgePanel:
     """Memoized panel: RAM -> disk -> build. See _panel_fingerprint for why a
     disk hit is only trusted when the fingerprint matches exactly.
+
+    maxsize is deliberately SMALL. Each panel is hundreds of MB, and the site
+    offers four rebalance clocks -- at maxsize=10 a visitor clicking through the
+    buttons could pin every one of them in RAM at once. Three bounds the worst
+    case while still keeping the shipped clock resident alongside one being
+    explored.
 
     `rebal_months` shapes the rebalance grid (see _rebal_grid). It defaults to
     None = the legacy fixed stride; the shipped model passes EDGE_SPEC's value."""
@@ -474,25 +510,44 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
                     rebal_months, round(21 * rebal_months), hold)
     want = _panel_fingerprint(hold, universe, offset_days, rebal_months)
     reads, path = _panel_cache_paths(hold, universe, offset_days, rebal_months)
-    for cand in reads:
-        if not cand.exists():
-            continue
-        try:
-            with open(cand, "rb") as fh:
-                blob = pickle.load(fh)
-            if blob.get("fingerprint") == want:
-                return blob["panel"]
-            log.info("panel cache %s is stale (data or code changed); rebuilding",
-                     cand)
-        except Exception:
-            # A corrupt or cross-version pickle must never be fatal: the whole
-            # point of this cache is speed, and rebuilding always works.
-            log.warning("panel cache %s unreadable; rebuilding", cand, exc_info=True)
 
-    t0 = _time.time()
-    panel = _build_edge_panel(hold, universe, offset_days, rebal_months)
-    log.info("panel rebuilt in %.0fs (hold=%s universe=%s rebal_months=%s)",
-             _time.time() - t0, hold, universe, rebal_months)
+    def _from_disk():
+        for cand in reads:
+            if not cand.exists():
+                continue
+            try:
+                with open(cand, "rb") as fh:
+                    blob = pickle.load(fh)
+                if blob.get("fingerprint") == want:
+                    return blob["panel"]
+                log.info("panel cache %s is stale (data or code changed); rebuilding",
+                         cand)
+            except Exception:
+                # A corrupt or cross-version pickle must never be fatal: the whole
+                # point of this cache is speed, and rebuilding always works.
+                log.warning("panel cache %s unreadable; rebuilding", cand,
+                            exc_info=True)
+        return None
+
+    panel = _from_disk()
+    if panel is not None:
+        return panel
+
+    with _PANEL_BUILD_LOCK:
+        # Re-check under the lock: if another thread was building this same panel
+        # we just waited for it, and it has now written the file. Reading it back
+        # costs seconds instead of repeating the build -- and, more importantly,
+        # never holds two panels-under-construction in memory at once.
+        panel = _PANEL_JUST_BUILT.get(want) or _from_disk()
+        if panel is not None:
+            log.info("panel was built by another thread while waiting; not rebuilding")
+            return panel
+        t0 = _time.time()
+        panel = _build_edge_panel(hold, universe, offset_days, rebal_months)
+        log.info("panel rebuilt in %.0fs (hold=%s universe=%s rebal_months=%s)",
+                 _time.time() - t0, hold, universe, rebal_months)
+        _PANEL_JUST_BUILT.clear()          # only the newest is ever useful
+        _PANEL_JUST_BUILT[want] = panel
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # UNIQUE temp name per writer. lru_cache holds no lock across the wrapped
