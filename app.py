@@ -137,8 +137,12 @@ def _safe(fn):
 
 # Public selector space = windows(7) x holds(4) x mixes(5) x n(6) = 840 combos.
 # Cache ABOVE that so a client cycling parameters can never evict-and-recompute:
-# each combo is computed at most once per worker. (Entries are result dicts with
-# small curves, ~tens of KB -> ~25MB fully populated.)
+# each combo is computed at most once per worker.
+#
+# SAFE HERE because the entries really are small: a backtest payload measured
+# 12 KB (curves are subsampled to ~300 points), so 1024 of them is ~12 MB.
+# See _cached_tracker for the same reasoning applied to a payload 40x larger,
+# where "never evict" was not affordable.
 @lru_cache(maxsize=1024)
 def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     # clock_spec, not a bare hold. The grid is calendar-anchored now, so passing
@@ -206,7 +210,20 @@ def api_edge_backtest():
     return _safe(lambda: _cached_edge_backtest(window, hold, mix, n))
 
 
-@lru_cache(maxsize=1024)            # same 840-combo space — never evict (see above)
+# NOT 1024. This copied _cached_edge_backtest's "never evict the 840-combo
+# space" reasoning, which was sound for a 12 KB payload and ruinous here: a
+# tracker payload is 489 KB -- it embeds the whole backtest-seeded log, one entry
+# per rebalance, each carrying its 10 holdings and their returns. At 1024 that is
+# ~500 MB of JSON, and considerably more as live Python dicts, on a 2 GB box.
+#
+# The monthly clock is what tipped it: 164 rebalances became 330, doubling the
+# payload under a cache size chosen when it was half as big. Two OOM kills on
+# 2026-07-30 (server_failed / oomKilled, memoryLimit 2Gi) traced back here.
+#
+# 12 covers the realistic working set -- a visitor toggling window and basket
+# size on one page -- for ~6 MB. A cold recompute costs ~3s, which is the right
+# trade against a 2 GB ceiling.
+@lru_cache(maxsize=12)
 def _cached_tracker(hold: int, window: str, mix: float, n: int):
     return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
 

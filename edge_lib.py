@@ -1095,7 +1095,12 @@ def _candidates(df, mcap_floor, name_trend=False,
     return d
 
 
-@lru_cache(maxsize=160)
+# 160 -> 24. Each entry keeps six per-rebalance arrays plus `holds`, a list of
+# 330 baskets -- and the monthly clock doubled the rebalance count, so every
+# entry doubled too. This is the tracker's compute path, and the tracker's own
+# response cache is now 12 deep (see app._cached_tracker), so retaining 160
+# variants underneath it cached work nothing could ask for.
+@lru_cache(maxsize=24)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False,
                sector_cap=None, name_trend=False, rebal_months=None,
