@@ -25,7 +25,12 @@ first is out-of-sample evidence.</p>
     <li><b>Liquidity floor</b> &mdash; keep only names &ge; $10B market cap. Momentum degrades as the
       floor drops &mdash; at $200M this same model loses badly to the index &mdash; so the floor is
       load-bearing, not a convenience.</li>
-    <li><b>Rank</b> by 12-1 momentum, highest first.</li>
+    <li><b>Solvency screens</b> &mdash; keep only companies generating <b>positive free cash flow</b> and
+      carrying <b>less than 4&times; EBITDA in debt</b>. Added 30 July 2026; it cut the worst simulated
+      drawdown from &minus;46% to &minus;29% for about a third of a point of annual return. Screens based
+      on <em>valuation</em> were tested and made the model worse &mdash; this is about whether a business
+      can survive a bad year, not whether its stock looks cheap.</li>
+    <li><b>Rank</b> by 12-1 momentum, highest first &mdash; the ranking itself uses price and nothing else.</li>
     <li><b>Sector cap</b> &mdash; at most 2 of the 10 from any one sector. Without it the book once
       held 9 technology names, which is really one bet wearing ten badges.</li>
     <li><b>Hold</b> the top N equal-weight (selector above; product = 10 stocks, the 7-stock research book is paper-tracked alongside).</li>

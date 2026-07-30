@@ -22,7 +22,8 @@
 {% block content %}
 <h1>The Model <span class="small">— full specification</span></h1>
 <p class="sub">Every equation behind the Edge, at the live product configuration. The model is
-<b>price-only</b>: it ranks stocks on their past returns. No fundamentals are used to pick names.</p>
+ranked on <b>price alone</b> &mdash; the ordering uses nothing but past returns &mdash; but since 30 July 2026
+two <b>fundamental screens</b> decide which companies are eligible to be ranked at all.</p>
 
 <div class="panel">
   <h2>Product configuration</h2>
@@ -56,7 +57,7 @@
 </div>
 
 <div class="panel eqsec">
-  <h2><span class="n">2</span> Signal <span class="small">(price only)</span></h2>
+  <h2><span class="n">2</span> Signal <span class="small">(price only &mdash; the ranking, not the eligibility)</span></h2>
   <p class="lead"><span class="live">12-1 momentum</span> — the twelve-month return, <em>skipping the
   most recent month</em>. \(P_i(t)\) is the split- and dividend-adjusted close.</p>
   <div class="eqbox">$$\text{mom}_i(t)=\frac{P_i(t-21)}{P_i(t-251)}-1$$</div>

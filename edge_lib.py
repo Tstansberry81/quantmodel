@@ -1,8 +1,9 @@
 """The Edge -- shared harness for the SHORT-TERM TRADING model (Porter & Co).
 
-It scans the Russell-1000-proxy universe and ranks on MARKET DATA ONLY
-(short-horizon momentum / relative strength / acceleration), no fundamentals apart
-from an optional revenue-growth tilt. Holding period ~30-60 days. Two proprietary
+It scans the Russell-1000-proxy universe and RANKS on market data only (12-1
+momentum). Fundamentals do not enter the ranking -- but since 2026-07-30 they do
+decide ELIGIBILITY: a name must clear the size floor, generate positive free cash
+flow, and carry debt under 4x EBITDA before it can be ranked at all. Holding period ~30-60 days. Two proprietary
 overlays get tested on top:
   * correlation cap (<=0.50) so the basket isn't eight versions of one bet,
   * a 200-day-MA regime switch that raises cash below the line.
@@ -98,7 +99,8 @@ RF_PER = config.RISK_FREE_ANNUAL / PPY
 N = 10                               # basket size (agents may vary)
 UNIVERSE = 1000                      # Russell-1000 proxy: top-N by point-in-time mcap
 
-# short-horizon signal columns the trading model ranks on (market data only)
+# short-horizon signal columns the trading model RANKS on (market data only;
+# fundamentals gate eligibility instead -- see _candidates)
 SIGNAL_COLS = ["ret_21", "ret_63", "ret_126", "ret_12_1", "accel", "hi_252", "rs_63"]
 
 # The single source of truth for backtest/tracker window labels. app.py,
@@ -203,7 +205,8 @@ def _rebal_grid(cal: pd.DatetimeIndex, hold: int, offset_days: int,
 def _build_edge_panel(hold: int, universe: int, offset_days: int,
                       rebal_months: int | None = None) -> EdgePanel:
     """Build the trading panel once. Each row = one candidate's short-horizon
-    market-data signals + forward return. NO fundamentals.
+    market-data signals + forward return, plus whatever fundamentals the
+    artifact carries (used for eligibility screens, never for ranking).
 
     Call load_edge_panel() instead: it adds the memo + disk cache around this."""
     data = D.load_bt_data(); bm = D.benchmarks()
