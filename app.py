@@ -8,6 +8,7 @@ Run:  python app.py     ->  http://127.0.0.1:5000
 """
 from __future__ import annotations
 import argparse
+import logging
 import os
 import sys
 
@@ -41,8 +42,19 @@ import export_vision        # imports edge_lib/edge_tracker_lib too — same rea
 
 import config   # noqa: E402  -- importing config loads .env for every entrypoint
 
+# INFO to stdout. Flask's app.logger and every library logger default to
+# WARNING outside debug mode, so edge_lib's "panel cache is stale; rebuilding"
+# and "cache warm done in Ns" were never emitted. Their absence from the Render
+# logs looked like "no rebuild happened" and was actually "no logging happened"
+# -- I spent a long time today reading that silence as evidence.
+logging.basicConfig(
+    level=os.environ.get("EDGE_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stdout, force=True)
+
 app = Flask(__name__)
 app.json.sort_keys = False
+app.logger.setLevel(logging.INFO)
 
 
 # ---- error handlers --------------------------------------------------------
@@ -313,6 +325,46 @@ def api_edge_tracker():
                          # survivorship-free data); selectable for exploration only
     n = _parse_n(request.args.get("n", 10))
     return _safe(lambda: _cached_tracker(hold, window, mix, n))
+
+
+@app.get("/api/diag")
+def api_diag():
+    """Why is the panel being rebuilt? Answers it directly instead of by inference.
+
+    Reports the fingerprint production COMPUTES against the one each cached panel
+    STORES. A mismatch is the difference between a 0.3s unpickle and a ~4min
+    rebuild, and it is otherwise invisible: a stale panel is a cache miss, not an
+    error. Cheap and lock-free, so it works while a compute is in flight."""
+    import pickle as _pk
+    clock = edge_lib.clock_spec(edge_lib.EDGE_SPEC["hold"])
+    want = edge_lib._panel_fingerprint(clock["hold"], edge_lib.UNIVERSE, 0,
+                                       clock["rebal_months"])
+    reads, write = edge_lib._panel_cache_paths(clock["hold"], edge_lib.UNIVERSE, 0,
+                                               clock["rebal_months"])
+    panels = []
+    for p in reads:
+        rec = {"path": str(p), "exists": p.exists()}
+        if p.exists():
+            rec["size_mb"] = round(p.stat().st_size / 1e6, 1)
+            try:
+                with open(p, "rb") as fh:
+                    rec["fingerprint"] = _pk.load(fh).get("fingerprint")
+                rec["MATCHES"] = rec.get("fingerprint") == want
+            except Exception as e:                       # noqa: BLE001
+                rec["error"] = f"{type(e).__name__}: {e}"
+        panels.append(rec)
+    return jsonify({
+        "ok": True,
+        "expected_fingerprint": want,
+        "panels": panels,
+        "knobs": {"use_pit_universe": edge_lib.USE_PIT_UNIVERSE,
+                  "delist_haircut": edge_lib.DELIST_HAIRCUT,
+                  "lb": edge_lib.LB, **clock,
+                  "universe": edge_lib.UNIVERSE},
+        "panel_cache_dir": str(edge_lib.PANEL_CACHE_DIR),
+        "compute_lock_held": _COMPUTE_LOCK.locked(),
+        "memo_keys": [str(k) for k in _COMPUTE_MEMO],
+    })
 
 
 @app.get("/api/meta")
