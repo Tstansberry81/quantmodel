@@ -214,10 +214,16 @@ def export_to_vision(window: str = WINDOW, hold: int = HOLD,
     msg = (f"Sync Vision — {cfg['window']} / {cfg['rebalance']} / "
            f"{cfg['n']} stocks / {cfg.get('signal', '?')}"
            + (f" (by {actor})" if actor else ""))
-    if os.environ.get("GITHUB_TOKEN"):
+    # Gate on the SAME condition push_to_github uses. This used to test
+    # GITHUB_TOKEN alone, so setting only VISION_GITHUB_TOKEN -- the recommended
+    # least-privilege setup -- fell to the else branch and wrote a local file on
+    # Render's ephemeral disk, reported ok=True, and never pushed anything. The
+    # publish would look like it worked and the public site would never change.
+    if os.environ.get("VISION_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"):
         res = push_to_github(pj, msg)
     else:
-        res = {"pushed": False, "local_path": write_local(pj), "reason": "no GITHUB_TOKEN — wrote local file"}
+        res = {"pushed": False, "local_path": write_local(pj),
+               "reason": "no VISION_GITHUB_TOKEN / GITHUB_TOKEN — wrote local file"}
     return {
         "ok": bool(res.get("pushed") or res.get("local_path")),
         "pushed": bool(res.get("pushed")),
