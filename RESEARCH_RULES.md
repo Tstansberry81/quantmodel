@@ -179,6 +179,42 @@ The grid is now anchored to calendar month starts, so the phase is fixed by the
 calendar rather than by an accident, and the reported numbers are what that
 convention actually produces.
 
+## 9. A forward record's timestamp is the evidence — the book date is just a label
+
+Discovered 2026-07-30, two trading days before it would have published a fake
+number.
+
+The v5 book is *dated* 2026-07-01, because that is the rebalance the panel
+produced it for. It was first written down on 2026-07-30, when the solvency
+screens shipped — by which point ~91% of its 07-01 → 08-03 window had already
+happened. On 3 August the row would have flipped to CLOSED and posted the full
+window's return inside the panel headed *"the only out-of-sample evidence."*
+
+Every individual number would have been correct. The basket was real, the dates
+were real, the return was real. The claim built on them — that this was
+out-of-sample — was false, because the selection was made with the outcome
+already visible.
+
+The rule: **a rebalance is forward evidence only if the wall-clock moment it was
+recorded precedes the window it is scored over.** Store that timestamp, compare
+it to the book date, and refuse to score anything where the gap is material.
+Nothing about a backfilled row looks wrong from the inside; the only thing that
+distinguishes it from genuine evidence is a timestamp, so the timestamp has to
+be load-bearing rather than decorative.
+
+Where this hides: any time the rules change mid-period. Re-picking a book under
+new rules re-dates it to the current rebalance, which silently backdates its
+entry. The more careful you are about applying new rules consistently to
+history, the more likely you are to walk into this.
+
+Corollary — the same defect had a second face. Exit dates were being
+approximated (`hold × 7/5` calendar days) rather than read from the panel's own
+`next_dates`. That is correct for a fixed trading-day stride and wrong for a
+month grid, where gaps run 15–23 trading days. It put the 07-01 book's exit at
+07-30 instead of 08-03, which is what made a row appear to open and close on the
+same day. **Derive a date only when you cannot read it** — the panel already
+knew every exit, because tiling the calendar exactly is its construction rule.
+
 ## Status (2026-07-27)
 
 - `accel` is FALSIFIED: +0.27%/reb (t=0.4) in-sample, −6.4%/yr out-of-sample,
