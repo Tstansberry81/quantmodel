@@ -4,9 +4,17 @@ services:
   - type: web
     name: quant-model
     runtime: python
-    # The backtest loads a ~179MB panel into RAM (peaks ~0.8-1.2GB). The 512MB
-    # free/starter tiers will likely OOM — use a >=2GB plan. Drop to "starter"
-    # only if you slim the data bundle first.
+    # The backtest loads the rebalance panel into RAM (peaked ~0.8-1.2GB with the
+    # old 2-month clock). The 512MB free/starter tiers will likely OOM — use a
+    # >=2GB plan. Drop to "starter" only if you slim the data bundle first.
+    #
+    # WATCH THIS after 2026-07-30: the monthly clock doubles the number of
+    # rebalances in the DEFAULT panel, so that panel is roughly twice the size it
+    # was (~179MB -> ~350MB on the deploy-trimmed artifact). The total across all
+    # four selectable clocks is about unchanged — a 6M panel has a sixth of the
+    # rebalances of a 1M one — but the single resident panel on a normal page
+    # load is the big one now. If deploys start dying, check for OOM in the
+    # service events before assuming a code fault.
     plan: standard
     buildCommand: "pip install -r requirements.txt && python fetch_data.py"
     # timeout 240: a real backtest is ~30-60s (cold panel build for a non-default
@@ -39,6 +47,13 @@ services:
       # start, rather than on every one.
       - key: EDGE_PANEL_CACHE_DIR
         value: /var/data
+      # Generated company write-ups for the Vision book. On the persistent disk
+      # because the alternative is re-billing an LLM call for all ten holdings
+      # every time someone clicks "Sync to Vision" after a restart. Needs
+      # ANTHROPIC_API_KEY (already set for the in-app chat assistant); without it
+      # the book still publishes, carrying its Sharadar industry label and no prose.
+      - key: EDGE_DESC_PATH
+        value: /var/data/company_desc.json
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
       # pit_universe auto-detects, and now that the artifact reports
       # source=sharadar the SharadarAdapter activates -- so production would

@@ -108,6 +108,11 @@ def _edge_windows() -> frozenset:
 
 
 _EDGE_HOLDS = {21, 42, 63, 126}
+# The selector default is the SHIPPED clock, read from the spec rather than typed
+# in. It was hardcoded to 42 in four places; when the model moved to a monthly
+# rebalance (2026-07-30) each of those would have kept serving a 2-month backtest
+# as "the model" to anyone who hadn't touched the buttons.
+_DEFAULT_HOLD = edge_lib.EDGE_SPEC["hold"]
 _EDGE_MIXES = {0.0, 0.25, 0.5, 0.75, 1.0}   # growth-mix selector options
 _EDGE_NS = set(range(5, 11))                # basket-size selector: 5..10 stocks
 # Per-IP bucket for the compute endpoints. The caches (above) bound TOTAL work;
@@ -136,8 +141,13 @@ def _safe(fn):
 # small curves, ~tens of KB -> ~25MB fully populated.)
 @lru_cache(maxsize=1024)
 def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
-    return edge_lib.run_edge_backtest(window=window,
-                                      spec={"hold": hold, "growth_mix": mix, "n": n})
+    # clock_spec, not a bare hold. The grid is calendar-anchored now, so passing
+    # only `hold` would leave rebal_months at the shipped value and report a
+    # monthly book on (say) a 3-month annualization: one number in, a coherent
+    # pair out.
+    return edge_lib.run_edge_backtest(
+        window=window,
+        spec={**edge_lib.clock_spec(hold), "growth_mix": mix, "n": n})
 
 
 def _warm_caches():
@@ -149,7 +159,7 @@ def _warm_caches():
     import time as _t
     t0 = _t.time()
     try:
-        _cached_edge_backtest("MAX", 42, 0.0, 10)           # the default /edge view
+        _cached_edge_backtest("MAX", _DEFAULT_HOLD, 0.0, 10)  # the default /edge view
         edge_tracker_lib.tracker_state()                    # tracker shares the panels
         app.logger.info("cache warm done in %.0fs", _t.time() - t0)
     except Exception:
@@ -180,11 +190,11 @@ def api_edge_backtest():
     if window not in _edge_windows():
         window = "MAX"
     try:
-        hold = int(body.get("hold", 42))
+        hold = int(body.get("hold", _DEFAULT_HOLD))
     except (TypeError, ValueError):
-        hold = 42
+        hold = _DEFAULT_HOLD
     if hold not in _EDGE_HOLDS:
-        hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
+        hold = _DEFAULT_HOLD                     # 21/42/63/126 = 1M/2M/3M/6M clock
     try:
         mix = round(float(body.get("mix", 0.0)), 2)
     except (TypeError, ValueError):
@@ -206,11 +216,11 @@ def api_edge_tracker():
     if not _rate_ok(_client_ip(), _BT_RATE, _BT_WINDOW, _bt_hits):
         return jsonify({"ok": False, "reason": "Too many requests — please wait a moment."})
     try:
-        hold = int(request.args.get("hold", 42))
+        hold = int(request.args.get("hold", _DEFAULT_HOLD))
     except (TypeError, ValueError):
-        hold = 42
+        hold = _DEFAULT_HOLD
     if hold not in _EDGE_HOLDS:
-        hold = 42                                # 21/42/63/126 = 1M/2M/3M/6M clock
+        hold = _DEFAULT_HOLD                     # 21/42/63/126 = 1M/2M/3M/6M clock
     window = (request.args.get("window", "MAX") or "MAX").upper()
     if window not in _edge_windows():
         window = "MAX"
@@ -242,7 +252,7 @@ def api_sync_vision():
     # Default to the SHIPPED clock, not 21. Defaulting to a hold the product does
     # not use meant a sync with no explicit hold published a different model to a
     # public site (the growth-mix argument, now removed, did the same).
-    _default_hold = edge_lib.EDGE_SPEC["hold"]
+    _default_hold = _DEFAULT_HOLD
     try:
         hold = int(body.get("hold", _default_hold))
     except (TypeError, ValueError):

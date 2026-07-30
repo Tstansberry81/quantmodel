@@ -100,12 +100,71 @@ gave a yield inflated 1e6×; because ranking is scale-invariant the ordering
 looked fine and nothing threw. Print medians and non-null percentages for any
 new factor before trusting it.
 
+## 6b. A knob with no effect is a bug until proven otherwise
+
+Recurring failure, hit twice now. The delisting stress test returned identical
+CAGR at −30%, −50% and −100% haircuts; a −100% wipeout cannot change nothing, and
+the cause was that the knob only reached `fwd_ret` while the measurement came off
+the daily curve. Then, sweeping the rebalance grid's phase, six offsets returned
+byte-identical rows to four decimal places — because `_edge_daily` takes no
+offset argument at all (it derives offsets from `stagger`), so the sweep was six
+copies of one run.
+
+Both were caught by the same reflex, and it is the rule: **before reporting that
+a lever does nothing, prove the lever reached the code path being measured.**
+Vary it and demand the number move somewhere. Identical to four decimals is not
+a finding, it is a disconnected wire.
+
 ## 7. Never ship silently
 
 Model parameter changes get shown as a diff and verified through production
 before going live. The signal label was hardcoded to "acceleration" in two
 places and kept saying so after the signal changed — the site would have
 described a model that wasn't running.
+
+## 8. An arbitrary implementation choice is a free parameter — sweep it
+
+**Found 2026-07-30, and it invalidated a headline number that had been on the
+site for two days.**
+
+The rebalance grid was built as `monthly[:-hold][::hold]` — a fixed stride of
+`hold` trading days starting from whatever day happened to sit 400 calendar days
+into the sample. Nobody chose that start date; it fell out of a lookback buffer.
+It was never treated as a parameter, so it was never swept.
+
+Sliding that anchor a week at a time, holding everything else fixed:
+
+| phase | CAGR | Sharpe | maxDD | worst drawdown |
+|------:|-----:|-------:|------:|----------------|
+| 0  | 18.29% | 0.934 | **−30.76%** | 2021-08 → 2022-01 |
+| 7  | 16.95% | 0.874 | −43.62% | 2021-08 → 2023-10 |
+| 14 | 17.08% | 0.884 | −43.21% | 2021-02 → 2023-10 |
+| 21 | 15.79% | 0.826 | −44.79% | 2021-08 → 2023-10 |
+| 28 | 15.68% | 0.824 | −47.79% | 2021-02 → 2023-10 |
+| 35 | 16.33% | 0.850 | −48.15% | 2021-06 → 2023-10 |
+
+Phase 0 — the shipped one — is the **best of six on every axis**, and it is not
+marginally best: the drawdown spread is 17.4 points and the median is −44.21%.
+Look at the last column. Every other phase stays underwater until October 2023;
+phase 0 recovers in January 2022. It exited the November-2021 momentum peak on a
+lucky week and re-entered on another. That is the entire −30.8%.
+
+So `−30.8% max drawdown`, `18.29% CAGR` and `Sharpe 0.934` were never properties
+of the model. They were properties of one arbitrary start date, and they were
+published on the site, written into `EDGE_SPEC`'s comments as the measured effect
+of the volatility target, and quoted in `MODEL_STATUS`.
+
+The rule: **if a number falls out of an implementation detail nobody deliberately
+chose, it is a free parameter you have already fitted without noticing.** Sweep
+it. Report the median and the spread, not the run you happened to write first.
+Structural choices of this kind — grid phase, tie-breaking order, which bar a
+window starts on, how a partial period is handled — do not announce themselves as
+parameters, which is exactly why they escape every overfitting check in rule 3.
+
+Corollary: the fix is not to hunt for a better phase. It is to stop having one.
+The grid is now anchored to calendar month starts, so the phase is fixed by the
+calendar rather than by an accident, and the reported numbers are what that
+convention actually produces.
 
 ## Status (2026-07-27)
 

@@ -69,6 +69,29 @@ except ValueError:
     DELIST_HAIRCUT = 0.0
 
 HOLD = 21                            # ~30 calendar days (a 1-month trading clock)
+
+# Rebalance grid shape. The SHIPPED value lives in EDGE_SPEC["rebal_months"];
+# this is only the low-level default.
+#
+#   None -> LEGACY: a fixed stride of `hold` trading days from an arbitrary
+#           anchor (the day that happens to sit 400 calendar days into the
+#           sample). Every existing research script gets this, so results
+#           recorded before 2026-07-30 stay reproducible.
+#   k    -> the first TRADING day of every k-th calendar month.
+#
+# Kept as None here ON PURPOSE. Defaulting it to the shipped value would hand a
+# calendar grid to the ~30 research scripts that call load_edge_panel(hold=42)
+# directly, silently pairing a monthly grid with a 2-month annualization -- a
+# wrong number with no error. Scripts that mean to measure the SHIPPED model must
+# read EDGE_SPEC (see RESEARCH_RULES #7).
+REBAL_MONTHS: int | None = None
+
+# Phase anchor for a multi-month grid: July 2026, the month the calendar-anchored
+# convention shipped. Any FIXED epoch would do -- what matters is that it never
+# moves, so the historical grid is the same next year as it is today. Expressed
+# as a month ordinal (year*12 + month) so modular arithmetic is trivial.
+ANCHOR_MONTH = 2026 * 12 + 7
+
 LB = 251                             # trailing window for signals / beta
 PPY = 252.0 / HOLD
 RF_PER = config.RISK_FREE_ANNUAL / PPY
@@ -99,9 +122,19 @@ def window_k(window: str, n_days: int) -> int:
 class EdgePanel:
     def __init__(self, panels, bdates, spxf, ndxf, ma200_on, mkt_daily, sectors, hold,
                  live_panel=None, live_date=None, live_regime_on=True,
-                 live_spx_todate=float("nan")):
+                 live_spx_todate=float("nan"), next_dates=None):
         self.panels = panels          # list[DataFrame] per rebalance
         self.bdates = bdates          # DatetimeIndex
+        # EXIT anchor per rebalance: the FOLLOWING rebalance date, i.e. the date
+        # whose book replaces this one. Windows are derived from this rather than
+        # from a fixed day count because a calendar grid has variable gaps --
+        # month starts are 19-23 trading days apart. A fixed 21-day window would
+        # sometimes overshoot the next rebalance (double-counting days) and
+        # sometimes stop short of it, leaving holes that `.dropna()` deletes from
+        # the daily curve -- which quietly INFLATES CAGR, since _perf_daily
+        # annualizes by 252/len(r). With a fixed stride this is exactly
+        # equivalent to the old +hold arithmetic.
+        self.next_dates = next_dates  # DatetimeIndex | None (None => use `hold`)
         self.spxf = spxf              # S&P fwd return per period (over the FULL hold window)
         self.ndxf = ndxf              # Nasdaq fwd return per period (over the FULL hold window)
         self.ma200_on = ma200_on      # bool array: market above its 200-day MA at d
@@ -121,7 +154,54 @@ class EdgePanel:
         self.live_spx_todate = live_spx_todate    # S&P return since live_date
 
 
-def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
+def _rebal_grid(cal: pd.DatetimeIndex, hold: int, offset_days: int,
+                rebal_months: int | None) -> list:
+    """Every rebalance date, oldest first (the live one is the last entry).
+
+    `rebal_months=None` reproduces the original grid: a fixed stride of `hold`
+    trading days starting from whatever day sits 400 calendar days into the
+    sample. Nothing is wrong with the RETURNS that produces, but the anchor is
+    arbitrary, so the live book came out dated things like 2026-06-17 -- a date
+    with no meaning to anyone reading it.
+
+    `rebal_months=k` puts the grid on the first TRADING day of every k-th month.
+
+    For k>1 the PHASE is anchored to a fixed calendar epoch, not to the end of the
+    data. Phasing from the end is the tempting version -- it guarantees the newest
+    month is always a rebalance -- but it makes the entire grid slide by one month
+    every time a new month of data arrives. Every historical book would be
+    re-dated and every published number would move, monthly, with nothing in the
+    code changing. A fixed epoch costs at most k-1 months of live-book staleness
+    (which is honest: a 2-month strategy really does only produce a book every two
+    months) and buys a history that does not rewrite itself.
+
+    The epoch is ANCHOR_MONTH, chosen so that the month this convention shipped is
+    on the grid for every k -- so switching k never moves the current book date.
+    """
+    usable = cal[cal >= cal.min() + pd.Timedelta(days=400)]
+    if rebal_months is None:
+        return list(usable[offset_days:][::hold])
+
+    # First trading day of each month. groupby on (year, month) rather than
+    # resample("MS").first(): resample would emit the calendar 1st, which is a
+    # weekend or holiday about a third of the time.
+    s = pd.Series(usable, index=usable)
+    firsts = pd.DatetimeIndex(s.groupby([usable.year, usable.month]).min().to_numpy())
+    firsts = firsts.sort_values()
+    if rebal_months > 1:
+        ordinal = firsts.year * 12 + firsts.month
+        firsts = firsts[(ordinal - ANCHOR_MONTH) % rebal_months == 0]
+    if offset_days:
+        # Research only (staggered sleeves): push each date `offset_days` trading
+        # days later. Deliberately NOT month-anchored -- a stagger sleeve exists
+        # precisely to sit BETWEEN the grid points of the primary sleeve.
+        pos = cal.searchsorted(firsts) + offset_days
+        firsts = cal[pos[pos < len(cal)]]
+    return list(firsts)
+
+
+def _build_edge_panel(hold: int, universe: int, offset_days: int,
+                      rebal_months: int | None = None) -> EdgePanel:
     """Build the trading panel once. Each row = one candidate's short-horizon
     market-data signals + forward return. NO fundamentals.
 
@@ -164,18 +244,18 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
         return varr[p] if p >= 0 else np.nan
 
     lag = np.timedelta64(90, "D")
-    monthly = spx.index[spx.index >= spx.index.min() + pd.Timedelta(days=400)]
-    # offset_days shifts the whole rebalance grid (for staggered sleeves); 0 = default.
-    monthly = monthly[offset_days:]
-    rebal = list(monthly[:-hold][::hold])
-    # The scheduled rebalance grid runs `hold` days past the backtest panel's
-    # last date. That final entry is the position a live trader following the
-    # Edge opened and is STILL HOLDING -- no realized forward return yet, which
-    # is exactly why the backtest grid stops short of it. Build it here (same
-    # prep, same rules) but keep it out of `panels`.
-    sched = list(monthly[::hold])
-    live_d = sched[-1] if (sched and (not rebal or sched[-1] != rebal[-1])) else None
+    grid = _rebal_grid(spx.index, hold, offset_days, rebal_months)
+    # Each book is closed when the NEXT one is entered, so `nxt` is the whole
+    # window definition -- see EdgePanel.next_dates for why a day-count won't do.
+    nxt = {d: grid[i + 1] for i, d in enumerate(grid[:-1])}
+    # The last grid entry is the position a live trader following the Edge opened
+    # and is STILL HOLDING -- no realized forward return yet, which is exactly why
+    # the backtest must not score it. Built here (same prep, same rules) but kept
+    # out of `panels`.
+    rebal = grid[:-1]
+    live_d = grid[-1] if grid else None
     panels, bdates, spxf, ndxf, ma200_on = [], [], [], [], []
+    next_dates = []
     live_rows, live_date, live_regime_on, live_spx_todate = None, None, True, np.nan
     use_pit = USE_PIT_UNIVERSE and PIT.is_real_pit()
     spx_end = np.datetime64(pd.Timestamp(spx.index[-1]), "ns")   # sample end, for delist detection
@@ -183,6 +263,9 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
     for d in (rebal + ([live_d] if live_d is not None else [])):
         is_live = live_d is not None and d == live_d
         dt = np.datetime64(pd.Timestamp(d), "ns"); dlag = dt - lag
+        d_next = nxt.get(d)
+        dt_next = (np.datetime64(pd.Timestamp(d_next), "ns")
+                   if d_next is not None else None)
         # market trailing returns for relative strength
         mpos = int(np.searchsorted(spx.index.values.astype("datetime64[ns]"), dt, side="right")) - 1
         m63 = float(spx.iloc[mpos] / spx.iloc[mpos - 63] - 1) if mpos >= 63 else 0.0
@@ -198,7 +281,13 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
             if pos < LB:
                 continue
             n_fwd = len(P["arr"]) - 1 - pos
-            full_fwd = n_fwd >= hold + 1          # +1: enter next day (t+1)
+            # Exit bar: the position is closed at the t+1 close of the NEXT
+            # rebalance, which is the same bar the next book is entered on. Read
+            # off the name's OWN index so a halted stock exits on the calendar
+            # date the book turned over rather than N of its own bars later.
+            epos = (int(np.searchsorted(P["pidx"], dt_next, side="right")) - 1
+                    if dt_next is not None else -1)
+            full_fwd = epos > pos and epos + 1 < len(P["arr"])
             if is_live:
                 # No forward window exists yet for the open position. Require the
                 # name to still be trading at the rebalance (so a ticker that died
@@ -220,7 +309,7 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
             mc = asof(P["fidx"], P["mcap"], dlag)
             if mc is None or np.isnan(mc):
                 continue
-            cand.append((mc, ck, pos, full_fwd))
+            cand.append((mc, ck, pos, epos, full_fwd))
         if len(cand) < 50:
             continue
         cand.sort(key=lambda x: x[0], reverse=True)
@@ -229,7 +318,7 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
         if not pit_set:
             cand = cand[:universe]
         rows = []
-        for mc, ck, pos, full_fwd in cand:
+        for mc, ck, pos, epos, full_fwd in cand:
             P = prep[ck]; arr = P["arr"]; w = P["rets"][pos - LB + 1: pos + 1]
             wm = P["mret"][pos - LB + 1: pos + 1]
             sd = w.std(ddof=1)
@@ -263,7 +352,7 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
                 # rebalance no window has finished yet; under the delist stress knob
                 # a dying name is truncated at its last trade with the haircut
                 # applied -- every branch enters at the same t+1 close.
-                "fwd_ret": (arr[pos + 1 + hold] / arr[pos + 1] - 1) if full_fwd
+                "fwd_ret": (arr[epos + 1] / arr[pos + 1] - 1) if full_fwd
                            else (np.nan if is_live
                                  else (arr[-1] * (1.0 + DELIST_HAIRCUT)) / arr[pos + 1] - 1),
             }
@@ -282,16 +371,18 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
             live_spx_todate = float(spx.iloc[-1] / spx.iloc[mpos] - 1)
             continue
         panels.append(pd.DataFrame(rows)); bdates.append(pd.Timestamp(d))
-        # benchmark forward return over the FULL hold-day window (hold-aware!)
-        spxf.append(_bench_fwd_hold(spx, d, hold))
-        ndxf.append(_bench_fwd_hold(ndx, d, hold))
+        next_dates.append(pd.Timestamp(d_next) if d_next is not None else pd.NaT)
+        # benchmark over the SAME window as the stock side (rebalance-to-rebalance)
+        spxf.append(_bench_fwd_exit(spx, d, d_next))
+        ndxf.append(_bench_fwd_exit(ndx, d, d_next))
         ma200_on.append(regime_on)
 
     sectors = sorted({s for df in panels for s in df["sector"].unique() if str(s).lower() != "unknown"})
     return EdgePanel(panels, pd.DatetimeIndex(bdates), np.array(spxf), np.array(ndxf),
                      np.array(ma200_on, bool), mret_full, sectors, hold,
                      live_panel=live_rows, live_date=live_date,
-                     live_regime_on=live_regime_on, live_spx_todate=live_spx_todate)
+                     live_regime_on=live_regime_on, live_spx_todate=live_spx_todate,
+                     next_dates=pd.DatetimeIndex(next_dates))
 
 
 # ---- panel disk cache -------------------------------------------------------
@@ -308,7 +399,8 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int) -> EdgePanel:
 # constant: "bump the version when you change the builder" is a rule that gets
 # forgotten exactly once and then lies forever. Hashing the file over-
 # invalidates (an unrelated edit rebuilds too) -- the cheap direction to err.
-def _panel_fingerprint(hold: int, universe: int, offset_days: int) -> str:
+def _panel_fingerprint(hold: int, universe: int, offset_days: int,
+                       rebal_months: int | None = None) -> str:
     h = hashlib.sha256()
     h.update(pathlib.Path(__file__).read_bytes())          # the builder itself
     art = config.ARTIFACT_DIR / "backtest_data.pkl"        # the data it reads
@@ -320,7 +412,7 @@ def _panel_fingerprint(hold: int, universe: int, offset_days: int) -> str:
         h.update(meta.read_bytes())
     # module-level research knobs: NOT function args, so they must be hashed in
     # or flipping one would reuse the other variant's panel.
-    h.update(repr((hold, universe, offset_days, LB,
+    h.update(repr((hold, universe, offset_days, rebal_months, LB,
                    USE_PIT_UNIVERSE, DELIST_HAIRCUT)).encode())
     return h.hexdigest()[:16]
 
@@ -339,7 +431,8 @@ PANEL_CACHE_DIR = pathlib.Path(
     os.environ.get("EDGE_PANEL_CACHE_DIR", str(config.CACHE_DIR)))
 
 
-def _panel_cache_paths(hold: int, universe: int, offset_days: int):
+def _panel_cache_paths(hold: int, universe: int, offset_days: int,
+                       rebal_months: int | None = None):
     """(paths to try reading, path to write).
 
     Read and write targets differ on purpose. The bundled panel lives in
@@ -349,7 +442,12 @@ def _panel_cache_paths(hold: int, universe: int, offset_days: int):
     would put it straight back on ephemeral storage, which is exactly the case
     this exists to fix.
     """
-    name = f"panel_h{hold}_u{universe}_o{offset_days}.pkl"
+    # rebal_months is in the FILENAME, not just the fingerprint: a monthly-grid
+    # panel and a legacy-stride panel can share (hold, universe, offset), and two
+    # variants writing to one path would thrash -- each rebuilding over the other
+    # forever, on a cache whose entire job is to make the first request fast.
+    name = (f"panel_h{hold}_u{universe}_o{offset_days}.pkl" if rebal_months is None
+            else f"panel_h{hold}_u{universe}_o{offset_days}_m{rebal_months}.pkl")
     shipped = config.CACHE_DIR / name
     persist = PANEL_CACHE_DIR / name
     reads = [shipped] if shipped == persist else [shipped, persist]
@@ -357,11 +455,25 @@ def _panel_cache_paths(hold: int, universe: int, offset_days: int):
 
 
 @lru_cache(maxsize=10)
-def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0) -> EdgePanel:
+def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int = 0,
+                    rebal_months: int | None = REBAL_MONTHS) -> EdgePanel:
     """Memoized panel: RAM -> disk -> build. See _panel_fingerprint for why a
-    disk hit is only trusted when the fingerprint matches exactly."""
-    want = _panel_fingerprint(hold, universe, offset_days)
-    reads, path = _panel_cache_paths(hold, universe, offset_days)
+    disk hit is only trusted when the fingerprint matches exactly.
+
+    `rebal_months` shapes the rebalance grid (see _rebal_grid). It defaults to
+    None = the legacy fixed stride; the shipped model passes EDGE_SPEC's value."""
+    if rebal_months is not None and hold != round(21 * rebal_months):
+        # Not fatal -- a deliberate mismatch is a legitimate experiment -- but it
+        # must never happen SILENTLY. With a calendar grid the real holding window
+        # is rebalance-to-rebalance, so `hold` no longer sets it; it only drives
+        # annualization (ppy = 252/hold) and the rolling best/worst window. A
+        # monthly grid carrying hold=42 therefore reports 6 rebalances a year for
+        # a book that turns over 12 times -- right-looking numbers, wrong clock.
+        log.warning("panel grid mismatch: rebal_months=%s implies a ~%s-day hold "
+                    "but hold=%s was passed; annualization will use hold",
+                    rebal_months, round(21 * rebal_months), hold)
+    want = _panel_fingerprint(hold, universe, offset_days, rebal_months)
+    reads, path = _panel_cache_paths(hold, universe, offset_days, rebal_months)
     for cand in reads:
         if not cand.exists():
             continue
@@ -378,9 +490,9 @@ def load_edge_panel(hold: int = HOLD, universe: int = UNIVERSE, offset_days: int
             log.warning("panel cache %s unreadable; rebuilding", cand, exc_info=True)
 
     t0 = _time.time()
-    panel = _build_edge_panel(hold, universe, offset_days)
-    log.info("panel rebuilt in %.0fs (hold=%s universe=%s)",
-             _time.time() - t0, hold, universe)
+    panel = _build_edge_panel(hold, universe, offset_days, rebal_months)
+    log.info("panel rebuilt in %.0fs (hold=%s universe=%s rebal_months=%s)",
+             _time.time() - t0, hold, universe, rebal_months)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # UNIQUE temp name per writer. lru_cache holds no lock across the wrapped
@@ -626,13 +738,24 @@ def eval_windows(pan: EdgePanel, rets, label=""):
     return rets
 
 
-def _bench_fwd_hold(series, d, hold):
-    # Match the stock-side execution lag: enter at the first close after d (t+1)
-    # and exit hold days later, so the benchmark is measured over the same window.
-    fwd = series[series.index > d]
-    if len(fwd) < hold + 1:
+def _bench_fwd_exit(series, d, d_next):
+    """Benchmark return over the same window the STOCKS are held: in at the first
+    close after d, out at the first close after the following rebalance.
+
+    This replaced a version that took a fixed `hold` day-count. On a stride grid
+    the two agree exactly; on a calendar grid they do not, because month gaps run
+    19-23 trading days -- a fixed count would measure the benchmark over a window
+    the book never held, and every excess-return figure on the site is
+    model-minus-benchmark. The old helper is deleted rather than kept beside this
+    one: two near-identical benchmark functions is an invitation to call the
+    wrong one and get a plausible number."""
+    if d_next is None:
         return np.nan
-    return float(fwd.iloc[hold] / fwd.iloc[0] - 1)
+    entry = series[series.index > d]
+    exit_ = series[series.index > d_next]
+    if len(entry) == 0 or len(exit_) == 0:
+        return np.nan
+    return float(exit_.iloc[0] / entry.iloc[0] - 1)
 
 
 # ---- the robust, tradeable Edge: signal + liquidity + corr-cap + regime + costs
@@ -648,9 +771,42 @@ EDGE_SPEC = dict(
                                 # (+4.06%, t=2.7) and in high-dispersion sectors,
                                 # which is why the floor and the gate below are
                                 # part of the model rather than decoration.
-    hold=42,                    # 2-month clock. vs 1-month: gives up 1.6pts of
-                                # return for HALF the drawdown (-16% vs -33%)
-                                # and the best Sharpe (0.97 vs 0.88).
+    # ---- the rebalance clock (changed 2026-07-30) --------------------------
+    # rebal_months=1 puts every book on the FIRST TRADING DAY of a month, which
+    # is a product decision, not a research one: the book is published to
+    # subscribers and a book dated "2026-06-17" -- the arbitrary output of a
+    # 42-day stride from a 400-day offset -- is not a date anyone can plan
+    # around. Set rebal_months=2 to go back to the 2-month clock; the grid stays
+    # month-anchored either way, so the date convention survives the change.
+    #
+    # WHAT IT ACTUALLY COST -- and the bigger thing it uncovered.
+    #
+    # Naively the change looks expensive. Shipped before this: 18.29% CAGR /
+    # 0.934 Sharpe / -30.76% maxDD. Month-anchored monthly: 17.48% / 0.900 /
+    # -45.69%. A 15-point deeper drawdown would be a serious price.
+    #
+    # It isn't real. Holding the 2-month clock fixed and sliding ONLY the old
+    # grid's arbitrary start date a week at a time gives maxDD of -30.76, -43.62,
+    # -43.21, -44.79, -47.79, -48.15% -- the shipped anchor was the BEST OF SIX,
+    # median -44.21%, spread 17.4 points. Every other phase stayed underwater
+    # until October 2023; the shipped one recovered in January 2022 because it
+    # happened to exit the November-2021 momentum peak on a lucky week.
+    #
+    # So -30.8% was never a property of this model. It was a property of a start
+    # date nobody chose (it fell out of a 400-day lookback buffer) and never
+    # swept. Against the honest median of the old clock (~16.6% / ~0.87 / -44%),
+    # the monthly calendar grid at 17.48% / 0.900 / -45.69% is a wash on return
+    # and Sharpe and gives up nothing real on drawdown.
+    #
+    # The grid is now anchored to the calendar, so this class of luck is no
+    # longer available to us. See RESEARCH_RULES #8 and grid_phase_test.py.
+    rebal_months=1,             # None = legacy fixed stride, k = every k months
+    hold=21,                    # must track rebal_months (~21 trading days per
+                                # month). With a calendar grid the REAL window is
+                                # rebalance-to-rebalance; `hold` only drives
+                                # annualization and the rolling best/worst window,
+                                # so a mismatch here misreports the clock rather
+                                # than changing the returns. load_edge_panel warns.
     n=10,                       # the product book. Tighter is worse: n=5 draws
                                 # down -57% and goes negative out of sample.
     mcap_floor=1e10,            # $10B. Momentum degrades monotonically as the
@@ -700,17 +856,44 @@ EDGE_SPEC = dict(
     # fell only ~10%. Portfolio beta is 0.82, so those were momentum unwinds,
     # not market events -- and momentum vol spikes before momentum crashes.
     # Measured on top of continuous_regime: CAGR 20.19 -> 18.47%, Sharpe 0.865
-    # (those figures predate the 2026-07-29 delisting-default change; the shipped
-    # spec now reads 18.29% / 0.934 with dying names included -- see DELIST_HAIRCUT)
-    # -> 0.94, maxDD -39.35 -> -30.8%. It is the only lever tested that improved
+    # (those figures predate the 2026-07-29 delisting-default change; the spec
+    # then read 18.29% / 0.934 with dying names included -- see DELIST_HAIRCUT)
+    # -> 0.94, maxDD -39.35 -> -30.8%. It was the only lever tested that improved
     # ALL FIVE drawdown episodes. Response is monotone in the target (25/20/15%
     # -> -30.8/-25.5/-21.0% DD), i.e. no magic value was fitted.
+    #
+    # READ THE MAGNITUDES WITH CARE (2026-07-30). Every figure in the paragraph
+    # above was measured on the OLD grid's single arbitrary phase, which the
+    # phase sweep later showed to be the luckiest of six -- its -30.8% is a
+    # ~-44% drawdown in median phase. The monotone response to the target and
+    # the direction of the effect are unaffected (they are within-phase
+    # comparisons), and vol targeting survives on the shipped calendar grid. The
+    # ABSOLUTE levels quoted here do not. On the shipped monthly grid the spec
+    # reads 17.48% / 0.900 / -45.69%. RESEARCH_RULES #8.
     # A name-level 200dMA filter was tested alongside and REJECTED: it fixed the
     # 2021 unwind (-39.8 -> -27.4%) but made the aggregate drawdown WORSE
     # (-44.3%) by shrinking the basket in bad tape.
     vol_target=0.25,            # None disables; cap below means de-lever only
     vol_lookback=21,            # trailing days for realized vol (causal, t-1)
     vol_cap=1.0)                # never above 100% invested -- no leverage
+
+def clock_spec(hold: int) -> dict:
+    """Both halves of the rebalance clock from ONE number.
+
+    `hold` and `rebal_months` are not independent: rebal_months shapes the grid
+    (and therefore the real holding window), while hold drives annualization and
+    the rolling best/worst window. Setting them separately is how you get a book
+    that turns over monthly reported as 6 rebalances a year -- right-looking
+    numbers on the wrong clock.
+
+    Every product caller (app.py's hold buttons, the exporter, the tracker) funnels
+    through here, so the UI can keep speaking in trading days while the model gets
+    a coherent pair. Research code that wants the legacy stride bypasses this and
+    passes rebal_months=None explicitly.
+    """
+    months = max(1, int(round(float(hold) / 21.0)))
+    return {"hold": 21 * months, "rebal_months": months}
+
 
 def _sector_capped(frame, k, cap):
     """Walk best-first, admitting a name only while its sector is under `cap`.
@@ -802,14 +985,14 @@ def _candidates(df, mcap_floor, name_trend=False):
 @lru_cache(maxsize=160)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False,
-               sector_cap=None, name_trend=False):
+               sector_cap=None, name_trend=False, rebal_months=None):
     """Compute the full-history Edge once (cached). Returns the per-period gross
     & net returns, turnover, and aligned S&P / Nasdaq returns.
 
     growth_mix in [0,1] sets how much of the basket must come from names with YoY
     revenue growth >= growth_thresh (a fundamentals tilt; 0 = pure market-data)."""
     weights = dict(signal_key)
-    pan = load_edge_panel(hold=hold)
+    pan = load_edge_panel(hold=hold, rebal_months=rebal_months)
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
         d = _candidates(df, mcap_floor, name_trend)
@@ -849,12 +1032,12 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
 @lru_cache(maxsize=64)
 def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
                          corr_lookback, growth_mix, growth_thresh, fcf_screen=False,
-                         sector_cap=None, name_trend=False):
+                         sector_cap=None, name_trend=False, rebal_months=None):
     """Selection is the SAME for the net and gross backtest passes (cost doesn't
     change which names are picked), and it's the dominant cost (~8s/sleeve via the
     correlation cap). Cache it on the hashable spec so the gross pass — and repeat
     backtests at a different cost/window — reuse it instead of re-selecting."""
-    pan = load_edge_panel(hold=hold, offset_days=offset_days)
+    pan = load_edge_panel(hold=hold, offset_days=offset_days, rebal_months=rebal_months)
     holds, turn = _select_holds(pan, n, dict(signal_key), mcap_floor, corr_cap,
                                 corr_lookback, growth_mix, growth_thresh,
                                 fcf_screen=fcf_screen, sector_cap=sector_cap,
@@ -888,9 +1071,16 @@ def _sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, regime_daily
     cal = M.index
     out = pd.Series(np.nan, index=cal)
     rf_d = config.RISK_FREE_ANNUAL / 252.0
+    nd = getattr(pan, "next_dates", None)
     for i, cks in enumerate(holds):
         loc = int(cal.searchsorted(pan.bdates[i], side="right"))     # t+1 entry (exec lag)
-        win = cal[loc: loc + hold]
+        # Hold until the bar the NEXT book is entered on, so consecutive sleeves
+        # tile the calendar exactly. With a fixed stride this equals loc+hold; on
+        # a month grid it is what keeps the curve gap-free (see next_dates).
+        end = loc + hold
+        if nd is not None and i < len(nd) and pd.notna(nd[i]):
+            end = int(cal.searchsorted(nd[i], side="right"))
+        win = cal[loc: end]
         names = [c for c in cks if c in M.columns]
         if len(win) == 0 or not names:
             continue
@@ -946,7 +1136,7 @@ def _apply_vol_target(model, target, lookback, cap, cost_bps):
 def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                 signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False,
                 fcf_screen=False, sector_cap=None, name_trend=False,
-                vol_target=None, vol_lookback=21, vol_cap=1.0):
+                vol_target=None, vol_lookback=21, vol_cap=1.0, rebal_months=None):
     """Daily NET return series for the tradeable Edge (staggered sleeves when
     stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
     the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough.
@@ -965,7 +1155,7 @@ def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_
         pan, holds, turn = _select_holds_cached(hold, off, n, signal_key, mcap_floor,
                                                 corr_cap, corr_lookback, growth_mix,
                                                 growth_thresh, fcf_screen, sector_cap,
-                                                name_trend)
+                                                name_trend, rebal_months)
         series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:
@@ -1038,6 +1228,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     performance in the same shape the website's chart code expects (NET of costs)."""
     s = {**EDGE_SPEC, **(spec or {})}
     hold = s["hold"]
+    rm = s.get("rebal_months")
     stagger = bool(s.get("stagger", True))
     sig = tuple(sorted(s["signal"].items()))
     nt = s.get("name_trend", False)
@@ -1049,11 +1240,11 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     idx, model, spx, ndx, avg_to, prim = _edge_daily(
         hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
         s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr, fs, sc_cap, nt,
-        vt, vlb, vcap)
+        vt, vlb, vcap, rm)
     # gross (cost-free) daily model, for the gross->net turnover card
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
                                    s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt,
-                                   stagger, cr, fs, sc_cap, nt, vt, vlb, vcap)
+                                   stagger, cr, fs, sc_cap, nt, vt, vlb, vcap, rm)
     T = len(model)
     k = window_k(window, T)
     if k < 20:
@@ -1104,6 +1295,7 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
         "period": [str(dts[0].date()), str(dts[-1].date())],
         "period_detail": period_detail,
         "spec": {"signal": _signal_label(sig), "hold_days": hold,
+                 "rebal_months": rm,
                  "n": s["n"], "mcap_floor_bn": s["mcap_floor"] / 1e9,
                  "corr_cap": s["corr_cap"], "regime_expo": s["regime_expo"],
                  "cost_bps": s["cost_bps"], "stagger": stagger,

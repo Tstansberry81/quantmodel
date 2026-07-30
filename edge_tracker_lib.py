@@ -21,21 +21,30 @@ import pandas as pd
 import edge_lib as E
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
 
-# full-spec book parameters (must mirror EDGE_SPEC so the tracker == the product)
-HOLD = 42
+# Full-spec book parameters. READ from EDGE_SPEC, not retyped beside it.
+#
+# These used to be a hand-maintained copy with "must mirror EDGE_SPEC" written
+# above them, which is the same promise the panel-cache version constant used to
+# make -- and it has already been broken here more than once (the tracker ran
+# without the sector cap while the page said it had one). A mirror that is
+# derived cannot drift; a mirror that is retyped drifts the first time someone
+# edits one file and not the other. RESEARCH_RULES #7.
+_S = E.EDGE_SPEC
+HOLD = _S["hold"]
+REBAL_MONTHS = _S.get("rebal_months")   # calendar grid: books dated the 1st
 N = 10                              # product basket size (10-stock book)
 PAPER_N = 7                         # research candidate (2026-07 signal-hunt campaign):
                                     # paper-tracked forward ALONGSIDE the product book
-MCAP_FLOOR = 1e10        # $10B: momentum is a large-cap effect
-CORR_CAP = None          # off: it fights the signal (-2.5pts)
-SECTOR_CAP = 2           # max 2 names per sector (mirrors EDGE_SPEC)
-CORR_LOOKBACK = 126
-REGIME_EXPO = 0.25
-CONTINUOUS_REGIME = True # 2026-07-29: judge the 200dMA daily, not frozen at rebalance
-VOL_TARGET = 0.25        # scale exposure toward 25% annualized vol (de-lever only)
-VOL_LOOKBACK = 21
-COST_BPS = 10.0
-SIGNAL = {"ret_12_1": 1.0}
+MCAP_FLOOR = _S["mcap_floor"]       # $10B: momentum is a large-cap effect
+CORR_CAP = _S["corr_cap"]           # off: it fights the signal (-2.5pts)
+SECTOR_CAP = _S["sector_cap"]       # max 2 names per sector
+CORR_LOOKBACK = _S["corr_lookback"]
+REGIME_EXPO = _S["regime_expo"]
+CONTINUOUS_REGIME = _S["continuous_regime"]  # judge the 200dMA daily, not at rebalance
+VOL_TARGET = _S["vol_target"]       # scale exposure toward 25% annualized vol
+VOL_LOOKBACK = _S["vol_lookback"]
+COST_BPS = _S["cost_bps"]
+SIGNAL = dict(_S["signal"])
 _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 
 # --- STATUS OF THE SHIPPED SIGNAL -------------------------------------------
@@ -54,19 +63,27 @@ _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 # not yet beaten the index on a RISK-ADJUSTED basis out of sample.
 MODEL_STATUS = {
     "state": "live",
-    "since": "2026-07-29",
-    "headline": "12-1 momentum, large caps, regime-gated, volatility-targeted.",
+    "since": "2026-07-30",
+    "headline": ("12-1 momentum, large caps, regime-gated, volatility-targeted, "
+                 "rebalanced the first trading day of every month."),
     "detail": ("Acceleration was retired on 2026-07-27 after it was falsified on "
                "survivorship-free data. The replacement ranks large caps by 12-1 "
                "momentum, caps each sector at 2 names, judges the 200-day-MA "
                "regime daily, and scales exposure toward 25% annualized "
-               "volatility. Backtest, net of 10bps, 1999-2026: 18.3%/yr vs the "
-               "S&P's 8.6%, Sharpe 0.93 vs 0.53, max drawdown -30.8% vs -55.3%. "
-               "That is a BACKTEST. The forward record below starts at these "
-               "parameters and is the only out-of-sample evidence."),
+               "volatility. Backtest, net of 10bps, 1999-2026: 17.5%/yr vs the "
+               "S&P's 8.7%, Sharpe 0.90 vs 0.53, max drawdown -45.7% vs -55.3%. "
+               "CORRECTION (2026-07-30): this page previously showed 18.3%/yr, "
+               "Sharpe 0.93 and a -30.8% drawdown. Those came from a rebalance "
+               "grid that started on an arbitrary date, and sweeping that start "
+               "date showed it was the luckiest of six tested — the same model on "
+               "other start dates drew down -43% to -48%. The grid is now anchored "
+               "to calendar month starts, and the numbers above are what that "
+               "actually produces. The old ones were too good by accident. "
+               "All of it is still a BACKTEST; the forward record below is the "
+               "only out-of-sample evidence."),
 }
-GROWTH_MIX = 0.0                    # retired with accel (ranked NEGATIVELY)
-GROWTH_THRESH = 0.15               # YoY revenue-growth bar defining a "growth" name
+GROWTH_MIX = _S["growth_mix"]       # retired with accel (ranked NEGATIVELY)
+GROWTH_THRESH = _S["growth_thresh"]  # YoY revenue-growth bar defining a "growth" name
 
 # WHERE THE FORWARD RECORD LIVES.
 #
@@ -323,7 +340,8 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
     bdates, gross, net, turn, spxf, ndxf, holds = E._edge_full(
         hold, n, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
         tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH,
-        sector_cap=SECTOR_CAP)
+        sector_cap=SECTOR_CAP,
+        rebal_months=E.clock_spec(hold)["rebal_months"])
     T = len(net)
     log = []
 
@@ -437,6 +455,13 @@ def _forward_log(snaps, full_log, cfg, book_date):
     """
     # the backtest log keys its rebalance date as "opened", not "book_date"
     by_date = {e.get("opened"): e for e in full_log}
+    # Book dates the CURRENT grid can still produce. A snapshot written under a
+    # different rebalance convention has no date on this grid, so it can never be
+    # matched and would sit at OPEN forever -- a row that looks like a live
+    # position and is actually a fossil. On 2026-07-30 the clock moved from a
+    # 42-day stride to calendar month starts, which stranded every book dated
+    # mid-month. Say so instead of leaving it pending in perpetuity.
+    known = set(by_date)
     out = []
     for s in [x for x in snaps if _snap_config(x) == cfg]:
         bd = s.get("book_date")
@@ -445,6 +470,7 @@ def _forward_log(snaps, full_log, cfg, book_date):
         # it; the live book is still open by construction, and the matching log
         # row carries status OPEN in that case.
         is_open = match is None or match.get("status") != "CLOSED"
+        stranded = match is None and known and bd is not None and bd < max(known)
         closed = match or {}
         out.append({
             "book_date": bd,
@@ -452,7 +478,10 @@ def _forward_log(snaps, full_log, cfg, book_date):
             "logged_at": s.get("logged_at"),
             "tickers": s.get("tickers", []),
             "n": s.get("n"),
-            "status": "OPEN" if is_open else "CLOSED",
+            "clock": s.get("clock"),
+            "status": "STRANDED" if stranded else ("OPEN" if is_open else "CLOSED"),
+            "stranded_reason": ("recorded on a rebalance clock this model no longer "
+                                "runs, so no closing date exists for it") if stranded else None,
             "edge_ret": None if is_open else closed.get("edge_ret"),
             "sp_ret": None if is_open else closed.get("sp_ret"),
             "excess": None if is_open else closed.get("excess"),
@@ -468,14 +497,20 @@ def _forward_stats(flog):
     be read as the forward record's."""
     closed = [e for e in flog if e["status"] == "CLOSED" and e.get("excess") is not None]
     n_open = sum(1 for e in flog if e["status"] == "OPEN")
+    # Stranded rows are neither open nor closed, so both counts skip them. Report
+    # the number anyway: rows that silently vanish from every total are how a
+    # record ends up looking shorter than it is with no explanation on the page.
+    n_stranded = sum(1 for e in flog if e["status"] == "STRANDED")
     if not closed:
-        return {"n_closed": 0, "n_open": n_open, "hit_rate": None,
+        return {"n_closed": 0, "n_open": n_open, "n_stranded": n_stranded,
+                "hit_rate": None,
                 "avg_excess": None, "avg_edge_ret": None, "avg_sp_ret": None,
                 "first_logged": (flog[0].get("logged_at") if flog else None)}
     ex = [e["excess"] for e in closed]
     return {
         "n_closed": len(closed),
         "n_open": n_open,
+        "n_stranded": n_stranded,
         "hit_rate": sum(1 for v in ex if v > 0) / len(ex),
         "avg_excess": sum(ex) / len(ex),
         "avg_edge_ret": sum(e["edge_ret"] for e in closed) / len(closed),
@@ -506,6 +541,11 @@ def _persist_snapshots(pan, data, mix):
             "n": nn,
             "book_date": book_date,
             "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Stamp the rebalance clock this book was written under. Without it,
+            # a future clock change leaves rows that cannot be matched and no way
+            # to tell why -- which is exactly what the 2026-07-30 move to a
+            # calendar grid did to the books dated on the old 42-day stride.
+            "clock": {"hold": HOLD, "rebal_months": REBAL_MONTHS},
             "tickers": [r["ticker"] for r in book],
             "upgrades": UPGRADES.get(cfg, []),
         })
@@ -526,6 +566,11 @@ def _persist_snapshots(pan, data, mix):
                 "signal": "12-1 momentum + continuous 200dMA regime + GP/assets quality gate",
                 "book_date": book_date,
                 "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Stamp the rebalance clock this book was written under. Without it,
+            # a future clock change leaves rows that cannot be matched and no way
+            # to tell why -- which is exactly what the 2026-07-30 move to a
+            # calendar grid did to the books dated on the old 42-day stride.
+            "clock": {"hold": HOLD, "rebal_months": REBAL_MONTHS},
                 "tickers": gp_tickers,
                 "upgrades": UPGRADES.get("paper-upgraded", []),
             })
@@ -543,6 +588,11 @@ def _persist_snapshots(pan, data, mix):
                 "signal": "12-1 momentum + PEAD earnings-confirmation gate (drop SUE<0)",
                 "book_date": book_date,
                 "logged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Stamp the rebalance clock this book was written under. Without it,
+            # a future clock change leaves rows that cannot be matched and no way
+            # to tell why -- which is exactly what the 2026-07-30 move to a
+            # calendar grid did to the books dated on the old 42-day stride.
+            "clock": {"hold": HOLD, "rebal_months": REBAL_MONTHS},
                 "tickers": pead_tickers,
                 "upgrades": UPGRADES.get("paper-pead", []),
             })
@@ -575,7 +625,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         mix = round(float(mix), 2)
         if mix not in (0.0, 0.25, 0.5, 0.75, 1.0):
             mix = GROWTH_MIX
-        pan = E.load_edge_panel(hold=hold)
+        pan = E.load_edge_panel(**E.clock_spec(hold))
         data = engine.load_bt_data()
         current_book, book_date, live_cks, live = _current_book(pan, data, n, mix)
         full_log = _paper_log(pan, data, hold, n, mix, live, live_cks)

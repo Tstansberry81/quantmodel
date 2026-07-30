@@ -19,7 +19,7 @@ first is out-of-sample evidence.</p>
   <p class="small">The most recent month is skipped deliberately: over that horizon stocks tend to
   <i>reverse</i>, so including it works against the signal. This replaced the old acceleration signal
   in July 2026, after acceleration was falsified on survivorship-free data.</p>
-  <p class="small" style="margin-top:14px"><b>Each rebalance (~2-month clock):</b></p>
+  <p class="small" style="margin-top:14px"><b>Each rebalance (monthly, on the first trading day):</b></p>
   <ol class="small" style="line-height:1.7;margin-top:4px">
     <li><b>Universe</b> &mdash; top ~1,000 US names by market cap (Russell-1000 proxy).</li>
     <li><b>Liquidity floor</b> &mdash; keep only names &ge; $10B market cap. Momentum degrades as the
@@ -63,12 +63,12 @@ first is out-of-sample evidence.</p>
 <div class="controls" style="margin-bottom:10px">
   <label class="small">Rebalance clock:</label>
   <div class="btnrow" id="holdbtns">
-    <button data-h="21">1M</button>
-    <button data-h="42" class="active">2M</button>
+    <button data-h="21" class="active">1M</button>
+    <button data-h="42">2M</button>
     <button data-h="63">3M</button>
     <button data-h="126">6M</button>
   </div>
-  <span class="small">rebalance cadence (months) — drives the whole book + log</span>
+  <span class="small">rebalance cadence (months) — drives the whole book + log, always the first trading day</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Basket size:</label>
@@ -105,6 +105,11 @@ first is out-of-sample evidence.</p>
     &ldquo;logged&rdquo; column is the wall-clock time this system first recorded that basket &mdash;
     that timestamp, not the book date, is what makes a row genuine evidence. The record restarts
     whenever the model's parameters change, so it is deliberately short.</p>
+    <p class="small">A row marked <b>&#8856; stranded</b> was written down under a rebalance clock this
+    model no longer runs, so no closing date exists for it and it can never be scored. Moving to
+    monthly month-start rebalancing on 30 July 2026 stranded the books dated mid-month. They stay
+    visible rather than being deleted &mdash; but they are shown as stranded, not as still open,
+    because a row that can never close is not a live position.</p>
     <table id="fwdlog">
       <thead><tr><th>Book date</th><th>Logged</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Basket</th></tr></thead>
       <tbody></tbody>

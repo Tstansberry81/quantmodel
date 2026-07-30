@@ -21,6 +21,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import company_desc
 import edge_lib
 import edge_tracker_lib
 
@@ -37,7 +38,32 @@ LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the pr
 # regardless of which WINDOW drives the headline curve above.
 # basket size n=10 is the product book (edge_lib.EDGE_SPEC / edge_tracker_lib.N)
 
-_REBAL_LABEL = {21: "1M", 42: "2M", 63: "3M", 126: "6M"}
+# Handed to the description writer so the "why we bought it" sentence describes
+# THIS model rather than a generic fund. Kept next to the export (not inside
+# company_desc) because it is a statement about the shipped spec, and the values
+# are interpolated from the backtest's own spec dict rather than retyped.
+_MODEL_RULES = (
+    "A systematic momentum model. Every {months} month(s), on the first trading "
+    "day, it ranks US stocks above ${floor}B market cap by 12-1 momentum (the "
+    "trailing 12-month return excluding the most recent month) and buys the top "
+    "{n} equally weighted, capped at {cap} names per sector. It reads no "
+    "financial statements, has no view on any company's products, management or "
+    "valuation, and holds each name until the next rebalance. Exposure is cut "
+    "when the S&P is below its 200-day average and scaled down when the book's "
+    "own volatility runs hot.")
+
+
+def _rebal_label(spec: dict) -> str:
+    """How the rebalance clock is described on the product page.
+
+    Reads rebal_months, not hold. Since 2026-07-30 the grid is calendar-anchored
+    (books are dated the first trading day of a month), so the honest label is a
+    number of months; `hold` is only the trading-day approximation used for
+    annualization and would drift from the real clock if the two disagreed."""
+    m = spec.get("rebal_months")
+    if m:
+        return f"{int(m)}M"
+    return f"{spec.get('hold_days', '?')}d"
 
 # Fail loud at import time if either window label drifts from the model's list.
 # A raise, not an assert: asserts are stripped under `python -O`, which would
@@ -50,10 +76,13 @@ for _w in (WINDOW, LONG_WINDOW):
 def build(window: str = WINDOW, hold: int = HOLD) -> dict:
     """Build Vision's data payload at the given window / rebalance clock.
     The 20-year track-record curve uses the same clock, window=20Y."""
-    bt = edge_lib.run_edge_backtest(window=window, spec={"hold": hold})
+    # clock_spec so the grid and the annualization cannot be set apart; a bare
+    # {"hold": 42} here would run a monthly grid and label it a 2-month clock.
+    clock = edge_lib.clock_spec(hold)
+    bt = edge_lib.run_edge_backtest(window=window, spec=clock)
     if not bt.get("ok"):
         raise RuntimeError(f"backtest failed: {bt.get('reason')}")
-    lt = edge_lib.run_edge_backtest(window=LONG_WINDOW, spec={"hold": hold})
+    lt = edge_lib.run_edge_backtest(window=LONG_WINDOW, spec=clock)
     if not lt.get("ok"):
         raise RuntimeError(f"long backtest failed: {lt.get('reason')}")
     tr = edge_tracker_lib.tracker_state(hold=hold, window=window)
@@ -71,10 +100,35 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
         "signal_col": b.get("signal_col"), "price": b.get("price"),
     } for b in tr["current_book"]]
 
+    # Industry + three-sentence write-up per holding. Generated once per
+    # (ticker, book date) and cached, so a new name entering the book at the next
+    # rebalance is described automatically with no list to maintain. Never fatal:
+    # describe() returns an entry per holding regardless, and a name with no prose
+    # simply publishes its category. The book is data; this is commentary.
+    try:
+        desc = company_desc.describe(
+            book, tr["book_date"],
+            signal_label=spec.get("signal") or "momentum",
+            model_rules=_MODEL_RULES.format(
+                floor=spec.get("mcap_floor_bn"), cap=spec.get("sector_cap"),
+                months=spec.get("rebal_months"), n=len(book)))
+    except Exception as e:                                      # noqa: BLE001
+        desc = {}
+        print(f"  warning: descriptions unavailable ({type(e).__name__}: {e})")
+    for b in book:
+        d = desc.get(str(b["ticker"]).upper(), {})
+        b["industry"] = d.get("industry") or ""
+        b["what"] = d.get("what") or ""
+        b["different"] = d.get("different") or ""
+        b["why"] = d.get("why") or ""
+
     return {
         "product": "Vision",
-        "config": {"window": window, "rebalance": _REBAL_LABEL.get(hold, f"{hold}d"),
-                   "hold_days": hold, "n": len(book),
+        "config": {"window": window, "rebalance": _rebal_label(spec),
+                   "hold_days": spec.get("hold_days"),
+                   "rebal_months": spec.get("rebal_months"),
+                   "rebalance_day": "first trading day of the month",
+                   "n": len(book),
                    "signal": spec.get("signal"),
                    "mcap_floor_bn": spec.get("mcap_floor_bn"),
                    "sector_cap": spec.get("sector_cap"),
@@ -98,6 +152,13 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
         "windows": bt["windows"],
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "disclaimer": "Backtest, net of ~10bps costs. Not a forecast or investment advice.",
+        # Say where the prose came from. The numbers are computed; the sentences
+        # are written by a language model from the metadata and the model's own
+        # signal values. A reader is entitled to know which is which.
+        "descriptions_note": ("Company descriptions are written by an AI model from "
+                              "company metadata and this model's own signal values. "
+                              "They are unreviewed commentary, not research, and they "
+                              "played no part in choosing the stocks."),
     }
 
 

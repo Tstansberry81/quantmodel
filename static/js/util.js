@@ -19,7 +19,7 @@ async function safeJson(r) {
 // retired growth gate; a stale value left in a returning visitor's
 // localStorage is simply ignored.)
 const EDGE_OPTS_KEY = 'edgeOpts';
-const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 42, n: 10 };
+const EDGE_OPTS_DEFAULTS = { window: 'MAX', hold: 21, n: 10 };
 
 function loadEdgeOpts() {
   try {

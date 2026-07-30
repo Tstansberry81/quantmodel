@@ -134,7 +134,13 @@ if os.environ.get("SKIP_PANEL_PRECOMPUTE") != "1":
         for _pth in sorted(config.CACHE_DIR.glob("panel_h*.pkl")):
             _pth.unlink()          # never ship a panel from a previous artifact
         _t0 = time.time()
-        E.load_edge_panel(hold=E.EDGE_SPEC["hold"], universe=E.UNIVERSE, offset_days=0)
+        # clock_spec, not a bare hold: since the grid became calendar-anchored the
+        # panel is keyed on (hold, rebal_months) and the FILENAME carries both.
+        # Precomputing with hold alone would build the legacy-stride panel and
+        # ship it under a name the host never looks up -- a full cold rebuild on
+        # every start, with a shipped panel sitting right next to it, and no error.
+        E.load_edge_panel(universe=E.UNIVERSE, offset_days=0,
+                          **E.clock_spec(E.EDGE_SPEC["hold"]))
         _panels = sorted(config.CACHE_DIR.glob("panel_h*.pkl"))
         print(f"precomputed panel: {', '.join(p.name for p in _panels)} "
               f"({sum(p.stat().st_size for p in _panels)/1e6:.0f}MB, {time.time()-_t0:.0f}s)")

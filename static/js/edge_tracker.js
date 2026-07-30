@@ -85,9 +85,15 @@ function render(d){
   if (fwdBody) {
     fwdBody.innerHTML = flog.length ? flog.map(t=>{
       const open = t.status==='OPEN';
+      // STRANDED = written down under a rebalance clock the model no longer runs,
+      // so no closing date exists for it. Shown as its own state rather than as a
+      // perpetual OPEN, which would read as a live position that never resolves.
+      const badge = t.status==='STRANDED'
+        ? `<span class="small" title="${t.stranded_reason||''}">&#8856; stranded</span>`
+        : (open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>');
       return `<tr><td>${t.book_date}</td>
         <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}</td>
-        <td>${open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>'}</td>
+        <td>${badge}</td>
         <td class="${cls(t.edge_ret)}">${t.edge_ret==null?'—':sgnPct(t.edge_ret)}</td>
         <td class="${cls(t.sp_ret)}">${t.sp_ret==null?'—':sgnPct(t.sp_ret)}</td>
         <td class="${cls(t.excess)}">${t.excess==null?'—':sgnPct(t.excess)}</td>
@@ -99,11 +105,12 @@ function render(d){
   }
   const fwdMeta = document.getElementById('fwdmeta');
   if (fwdMeta) {
-    fwdMeta.textContent = fs.n_closed
+    const stranded = fs.n_stranded ? ` · ${fs.n_stranded} stranded by a clock change` : '';
+    fwdMeta.textContent = (fs.n_closed
       ? `${fs.n_closed} closed · ${fmtPct(fs.hit_rate)} beat the S&P · `
         +`${sgnPct(fs.avg_excess)} average excess · ${fs.n_open} open`
       : `${fs.n_open||0} open, 0 closed. Nothing here is evidence yet — the first `
-        +`rebalance needs a full holding period to finish.`;
+        +`rebalance needs a full holding period to finish.`) + stranded;
   }
 
   // ---- BACKTEST-SEEDED log (newest first) — NOT out-of-sample ----
@@ -125,7 +132,7 @@ function render(d){
       <td class="${cls(t.excess)}">${sgnPct(t.excess)}</td>
       <td style="text-align:center">${toggle}</td></tr>
       <tr class="port-row" id="port-${i}" hidden><td colspan="7">
-        <div class="port-meta">Basket held from ${t.opened} (equal-weight) — each name's own ~${Math.round((spec.hold_days||42)/21)}-month return:</div>
+        <div class="port-meta">Basket held from ${t.opened} (equal-weight) — each name's own ~${Math.round((spec.hold_days||21)/21)}-month return:</div>
         <div class="port-grid">${chips}</div></td></tr>`;}).join('');
   document.querySelectorAll('#log .port-toggle').forEach(btn=>{
     btn.addEventListener('click',()=>{
@@ -138,7 +145,7 @@ function render(d){
   });
   const wlabel = WINDOW==='MAX' ? 'full history' : `last ${WINDOW}`;
   document.getElementById('logmeta').textContent =
-    `${wlabel} · showing ${log.length} of ${s.n_total} SIMULATED rebalances (${Math.round((spec.hold_days||42)/21)}M clock) · `
+    `${wlabel} · showing ${log.length} of ${s.n_total} SIMULATED rebalances (${Math.round((spec.hold_days||21)/21)}M clock) · `
     +`beat the S&P ${fmtPct(s.hit_rate)} of the time · avg excess ${sgnPct(s.avg_excess)}/trade `
     +`(avg Edge ${sgnPct(s.avg_edge_ret)} vs S&P ${sgnPct(s.avg_sp_ret)}). `
     +`Returns are NET of ${spec.cost_bps}bps costs. These are backtest results, not a forward record — `

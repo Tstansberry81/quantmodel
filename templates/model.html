@@ -28,7 +28,7 @@
   <h2>Product configuration</h2>
   <div class="cards" id="cfg">
     <div class="stat"><div class="k">Signal</div><div class="v" style="font-size:15px">12-1 momentum</div></div>
-    <div class="stat"><div class="k">Holding / clock</div><div class="v" style="font-size:15px">2 months (~42d)</div></div>
+    <div class="stat"><div class="k">Holding / clock</div><div class="v" style="font-size:15px">1 month (first trading day)</div></div>
     <div class="stat"><div class="k">Basket</div><div class="v" style="font-size:15px">10 names · equal-wt</div></div>
     <div class="stat"><div class="k">Execution</div><div class="v" style="font-size:15px">enter next day (t+1)</div></div>
     <div class="stat"><div class="k">Liquidity floor</div><div class="v" style="font-size:15px">≥ $10B mcap</div></div>
@@ -147,8 +147,10 @@
     <li><b>12-1 momentum</b> — the ranking rule: last 12 months' return, skipping the last month.</li>
     <li><b>10 names, equal weight</b> — 10% of the money in each position.</li>
     <li><b>Sector cap 2</b> — at most 2 of the 10 from any one industry.</li>
-    <li><b>2-month clock</b> — how often it re-picks. Trading faster cost more in fees without improving
-      results; trading slower reacted too late.</li>
+    <li><b>Monthly clock</b> — it re-picks on the <em>first trading day of every month</em>, and each
+      book is held until the next one replaces it. The date is a product choice: a book has to arrive on
+      a day subscribers can plan around. It is not the highest-scoring clock — the 2-month version
+      backtests better — so the cost of it is stated in the results below rather than hidden.</li>
     <li><b>t+1 execution</b> — it buys at the <em>next</em> day's close, because you cannot rank every
       stock using a closing price and then also trade at that same price.</li>
     <li><b>10 bps costs</b> — 0.10% charged on the portion of the book that changes, approximating real
@@ -193,16 +195,27 @@
   </ul>
 
   <div class="warn">
-    <b>Honest limits.</b> The historical simulation returned about 18.3% a year against the S&amp;P 500's
-    8.6%, with a worst-case loss of 31% (the index itself lost 55% in 2008). Adding the volatility
-    target gave up roughly 1.7 points of annual return to cut that worst case from 39% to 31% — a
-    deliberate trade, not a free improvement. Those are <b>simulated</b>
-    results on past data, and the rules were chosen knowing how that period turned out. The previous
-    version of this model — a different momentum rule — was retired in July 2026 after testing on
-    survivorship-free data showed it <em>lost</em> to the index. Real forward-looking evidence begins the
-    day the current rules went live and is shown on the Edge Tracker page. None of this is investment
-    advice.
+    <b>Honest limits.</b> The historical simulation returned about 17.5% a year against the S&amp;P 500's
+    8.7%, with a worst-case loss of 46% (the index itself lost 55% in 2008). The volatility target is a
+    deliberate trade — give up some annual return to cut the worst case — not a free improvement. Those
+    are <b>simulated</b> results on past data, and the rules were chosen knowing how that period turned
+    out. The previous version of this model — a different momentum rule — was retired in July 2026 after
+    testing on survivorship-free data showed it <em>lost</em> to the index. Real forward-looking evidence
+    begins the day the current rules went live and is shown on the Edge Tracker page. None of this is
+    investment advice.
   </div>
+
+  <div class="warn">
+    <b>What we corrected on 30 July 2026.</b> Until this date this page claimed 18.3% a year and a
+    worst-case loss of 31%. Both were too good — and not because of a coding error, but because of a
+    choice nobody realised they were making. The model re-picks on a fixed cycle, and that cycle has to
+    start <em>somewhere</em>. The start date had been inherited from an unrelated piece of setup and was
+    never questioned. When we finally tested it — same rules, same data, just starting the cycle one
+    week later, then two weeks, and so on — the worst-case loss came out at 44%, 43%, 45%, 48% and 48%.
+    The 31% was the best of six, and the only one that got out of the 2021–23 downturn early. That was
+    luck with a start date, presented as a property of the model. The cycle is now pinned to the first
+    trading day of every month, so there is no start date left to get lucky with, and the figures above
+    are what that actually produces.
 </div>
 {% endblock %}
 {% block scripts %}

@@ -104,7 +104,7 @@ function render(d){
   document.getElementById('costnote').textContent = (s.cost_bps||10)+'bps';
   document.getElementById('spec').innerHTML = [
     ['Signal', s.signal||'12-1 momentum'],
-    ['Holding', Math.round((s.hold_days||42)/21)+'M (~'+(s.hold_days||42)+' trading days)'],
+    ['Holding', Math.round((s.hold_days||21)/21)+'M (~'+(s.hold_days||21)+' trading days, first trading day of the month)'],
     ['Basket', (s.n||10)+' names'],
     ['Liquidity floor', '≥ $'+fmtN(s.mcap_floor_bn,0)+'B'],
     ['Sector cap', (s.sector_cap ? 'max '+s.sector_cap+' per sector' : 'off')],

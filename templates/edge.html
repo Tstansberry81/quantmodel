@@ -9,7 +9,7 @@
     <button id="syncVision" type="button" class="sync-vision" title="Push the current backtest settings to the Vision product">Sync data to Vision</button>
   </div>
 </div>
-<p class="sub">Russell-1000 proxy, ranked on market data only (<b>12-1 momentum</b>), ~1–6 month holding.
+<p class="sub">Russell-1000 proxy, ranked on market data only (<b>12-1 momentum</b>), rebalanced on the first trading day of each month.
 $10B liquidity floor + max 2 names per sector + a 200-day regime switch judged daily + a 25% volatility target.
 History is <b>survivorship-free</b> (delisted companies included and held into their delisting).
 Returns are <b>net of {{ '' }}<span id="costnote">10bps</span> trading costs</b>.</p>
@@ -29,12 +29,12 @@ Returns are <b>net of {{ '' }}<span id="costnote">10bps</span> trading costs</b>
 <div class="controls" style="margin-bottom:10px">
   <label class="small">Rebalance clock:</label>
   <div class="btnrow" id="holdbtns">
-    <button data-h="21">1M</button>
-    <button data-h="42" class="active">2M</button>
+    <button data-h="21" class="active">1M</button>
+    <button data-h="42">2M</button>
     <button data-h="63">3M</button>
     <button data-h="126">6M</button>
   </div>
-  <span class="small">rebalance cadence (months)</span>
+  <span class="small">rebalance cadence (months), always the first trading day</span>
 </div>
 <div class="controls" style="margin-bottom:18px">
   <label class="small">Basket size:</label>
