@@ -34,7 +34,11 @@ async function run(){
     status.style.display='none';
     document.getElementById('app').style.display='block';
     const note=document.getElementById('windownote');
-    if(note) note.textContent=`${d.n_rebalances} rebalances · ${(d.period||[]).join(' → ')}`;
+    // "curve", not a bare date range. The END is a rebalance date but the START
+    // is just where the window slice begins (N trading days back), so printing
+    // them together read as though both were rebalance dates — under a header
+    // that promises rebalances are always the first trading day.
+    if(note) note.textContent=`${d.n_rebalances} rebalances · curve ${(d.period||[]).join(' → ')}`;
   }catch(e){ status.className='err'; status.textContent='Request failed: '+e; }
 }
 

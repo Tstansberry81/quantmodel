@@ -212,28 +212,34 @@ two <b>fundamental screens</b> decide which companies are eligible to be ranked 
   </ul>
 
   <div class="warn">
-    <b>Honest limits.</b> The historical simulation returned about 17.5% a year against the S&amp;P 500's
-    8.7%, with a worst-case loss of 46% (the index itself lost 55% in 2008). The volatility target is a
-    deliberate trade — give up some annual return to cut the worst case — not a free improvement. Those
-    are <b>simulated</b> results on past data, and the rules were chosen knowing how that period turned
-    out. The previous version of this model — a different momentum rule — was retired in July 2026 after
+    <b>Honest limits.</b> The historical simulation returned about 17.1% a year against the S&amp;P 500's
+    8.7%, with a worst-case loss of 29% (the index itself lost 55% in 2008). Both the volatility target
+    and the solvency screens are deliberate trades — each gives up some annual return to cut the worst
+    case — not free improvements. Those are <b>simulated</b> results on past data, and the rules were
+    chosen knowing how that period turned out. The previous version of this model — a different momentum rule — was retired in July 2026 after
     testing on survivorship-free data showed it <em>lost</em> to the index. Real forward-looking evidence
     begins the day the current rules went live and is shown on the Edge Tracker page. None of this is
     investment advice.
   </div>
 
   <div class="warn">
-    <b>What we corrected on 30 July 2026.</b> Until this date this page claimed 18.3% a year and a
-    worst-case loss of 31%. Both were too good — and not because of a coding error, but because of a
-    choice nobody realised they were making. The model re-picks on a fixed cycle, and that cycle has to
-    start <em>somewhere</em>. The start date had been inherited from an unrelated piece of setup and was
-    never questioned. When we finally tested it — same rules, same data, just starting the cycle one
-    week later, then two weeks, and so on — the worst-case loss came out at 44%, 43%, 45%, 48% and 48%.
-    The 31% was the best of six, and the only one that got out of the 2021–23 downturn early. That was
-    luck with a start date, presented as a property of the model. The cycle is now pinned to the first
-    trading day of every month, so there is no start date left to get lucky with, and the figures above
-    are what that actually produces.
-</div>
+    <b>What we corrected on 30 July 2026, and what changed after.</b> Until that date this page
+    claimed 18.3% a year and a worst-case loss of 31%. Both were too good — not from a coding error, but
+    from a choice nobody realised they were making. The model re-picks on a fixed cycle, and that cycle
+    has to start <em>somewhere</em>; the start date had been inherited from unrelated setup and was never
+    questioned. Testing it properly — same rules, same data, just starting the cycle a week later, then
+    two weeks, and so on — gave worst-case losses of 44%, 43%, 45%, 48% and 48%. The original 31% was the
+    best of six, and the only one that escaped the 2021–23 downturn early. That was luck with a start
+    date presented as a property of the model. The cycle is now pinned to the first trading day of each
+    month, so there is no start date left to get lucky with, and the honest figure at that point was
+    <b>−46%</b>.
+    <br><br>
+    The <b>−29%</b> shown above is not a return to the old optimism. It is what the
+    <b>solvency screens</b> — added the same day, after the correction — actually bought: dropping
+    companies that burn cash or carry heavy debt cut the worst case from −46% to −29% for about a third
+    of a point of annual return, and it held in all four independent sub-periods tested. Same honest
+    cycle, better selection.
+  </div>
 {% endblock %}
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
