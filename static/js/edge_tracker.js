@@ -1,3 +1,14 @@
+// 12-1 momentum is a FRACTIONAL RETURN, not a score. It was rendered with
+// fmtN(), so a name up 108% showed as "1.08" and SNDK's ~39x run showed as
+// "38.18" -- numbers a reader would read as single-digit percentages, in a
+// column the page itself labels "the last 12 months of return".
+//
+// Past +500% a percentage stops reading as a number and starts reading as a
+// formatting bug ("+3817.8%"), so switch to a multiple there. Same rule the
+// Vision write-ups use (company_desc._fmt_move), so the two surfaces agree.
+const fmtMom = v => v==null||isNaN(v) ? "—"
+  : (v >= 5 ? (v+1).toFixed(0)+"\u00d7" : (v>=0?"+":"")+(v*100).toFixed(0)+"%");
+
 const fmtPct = v => v==null||isNaN(v) ? "—" : (v*100).toFixed(1)+"%";
 const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
 const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
@@ -58,7 +69,7 @@ function render(d){
   // ---- current book table ----
   document.querySelector('#book tbody').innerHTML = (d.current_book||[]).map(b=>
     `<tr><td><b>${b.ticker}</b></td><td>${b.name||'—'}</td><td>${b.sector||'—'}</td>
-     <td>${fmtPct(b.weight)}</td><td class="${cls(b.signal)}">${fmtN(b.signal,2)}</td>
+     <td>${fmtPct(b.weight)}</td><td class="${cls(b.signal)}">${fmtMom(b.signal)}</td>
      <td class="${cls(b.ret_todate)}">${b.ret_todate==null?'—':sgnPct(b.ret_todate)}</td></tr>`).join('');
   const recTxt = s.record==='paper-n7'
     ? ' · n=7 research candidate — its forward record accrues alongside the product book'
