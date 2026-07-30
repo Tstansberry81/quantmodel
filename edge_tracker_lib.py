@@ -305,17 +305,41 @@ def _current_book(pan, data, n, mix):
     sig_col = max(SIGNAL, key=SIGNAL.get) if SIGNAL else "ret_12_1"
     sig = idx[sig_col] if sig_col in idx.columns else None
     todate = idx["fwd_todate"] if "fwd_todate" in idx.columns else None
+    # Where each pick stands in the FIELD it was chosen from. Computed here
+    # because `floored` -- the eligible universe on this date -- exists at this
+    # point and nowhere downstream. Vision's per-stock write-up uses it to say
+    # why the model bought a name using real numbers instead of prose: "top 1%
+    # of 812 names that cleared the floor" is a fact, not a characterisation.
+    n_elig = int(len(floored))
+    # sig_all is compared positionally ((sig_all < s).sum()), so `floored`'s
+    # default index is fine. mcap is looked up BY company_key, so it has to come
+    # off `idx` -- reading it from `floored` indexed the RangeIndex instead and
+    # every lookup missed, which silently dropped the market-cap clause from the
+    # published sentence rather than erroring.
+    sig_all = floored[sig_col] if sig_col in floored.columns else None
+    mcap_all = idx["pit_mcap"] if "pit_mcap" in idx.columns else None
     book = []
     for ck in cks:
         tk, nm, sec = _meta(data, ck)
         r = float(todate.get(ck, float("nan"))) if todate is not None else float("nan")
         s = float(sig.get(ck, float("nan"))) if sig is not None else float("nan")
+        pct = None
+        if sig_all is not None and s == s and n_elig:
+            # share of the eligible field this name outranks, 0..1
+            pct = float((sig_all < s).sum()) / n_elig
+        mc = None
+        if mcap_all is not None and ck in mcap_all.index:
+            v = float(mcap_all.get(ck, float("nan")))
+            mc = v if v == v else None
         book.append({
             "ticker": tk, "name": nm, "sector": sec, "weight": w,
             "signal": s,
             "signal_col": sig_col,
             "price": _latest_price(data, ck),
             "ret_todate": (r if r == r else None),      # NaN -> None
+            "pctile": pct,                  # rank within the eligible universe
+            "n_eligible": n_elig,           # how big that universe was
+            "mcap": mc,                     # point-in-time market cap
         })
     # highest-conviction first, by the signal actually used
     book.sort(key=lambda r: (r["signal"] if r["signal"] == r["signal"] else -1e9),

@@ -1,110 +1,77 @@
-"""Three-sentence company write-ups for the stocks in the Vision book.
+"""Per-holding write-ups for the Vision book. No paid API, nothing invented.
 
-WHAT IT PRODUCES, per holding:
-  industry   -- Sharadar's own label ("Semiconductors"). NOT generated.
-  what       -- what the business actually does
-  different  -- what separates it from the obvious comparison
-  why        -- why THIS MODEL bought it
+WHAT EACH HOLDING GETS
+    industry  -- Sharadar's own label ("Semiconductors"). Metadata, not prose.
+    what      -- what the business does, one or two sentences.
+    standing  -- where the name sits in the field it was picked from.
+    why       -- why THIS MODEL bought it.
 
-WHY THE PROSE IS GENERATED
-Sharadar ships sector, industry, location and a company website; it ships no
-business description. Nothing in the artifact can be templated into a readable
-sentence, so the sentences are written by Claude from the facts we do hold.
+WHY THERE IS NO LANGUAGE MODEL HERE
+An earlier version generated all three sentences with Claude. That is off the
+table: the API account has no funding, and a feature that silently stops working
+when a balance runs out is not a pipeline. Everything below either comes from a
+source we already pull or is COMPUTED from the model's own numbers.
 
-THE FAILURE MODE THIS FILE IS BUILT AROUND
-"Why we are buying it" is the sentence most likely to become fiction. A language
-model asked why a fund owns NVDA will happily produce a moat-and-TAM thesis. The
-Edge has no opinion about moats: it buys 12-1 momentum, above a $10B floor,
-capped at 2 names per sector, de-levered by a vol target. So the prompt is handed
-the REAL numbers behind the pick and instructed to explain those and nothing
-else -- and the site labels the text as model-written.
+That turned out to be the better design anyway. "Why we bought it" is the
+sentence most likely to become fiction -- a language model asked why a fund owns
+a stock will happily produce a moat-and-TAM thesis. The Edge has no view on
+moats. It buys 12-1 momentum above a size floor under a sector cap, and that
+reason is a handful of numbers we already have. Writing it as a template means it
+cannot drift from what the model actually did, and it costs nothing to run.
 
-Prose can never move a number. Everything here is display text hanging off a book
-that was already chosen; if generation fails the book publishes without it.
+WHERE `what` COMES FROM
+yfinance -- the same Yahoo source this app already uses for its benchmark series
+(edge_data.benchmarks), so it is not a new dependency or a new relationship. The
+text is Yahoo's, trimmed to the first sentence or two, and cached permanently per
+ticker because a company's line of business does not change month to month.
 
-CACHING
-Keyed on (ticker, book_date, prompt+model fingerprint) and stored as JSON. Three
-consequences worth stating:
-  * A repeated export costs nothing. "Sync to Vision" is a button; without a
-    cache every click would re-bill and re-latency ten LLM calls.
-  * A new name entering the book is the ONLY thing that triggers generation, so
-    the pipeline stays automatic with no list to maintain by hand.
-  * book_date is in the key ON PURPOSE. The `why` sentence quotes live momentum
-    numbers, so a cache keyed on ticker alone would still be reciting last
-    quarter's figures a year later. Regenerating monthly means the wording of the
-    first two sentences can drift slightly between rebalances; that is the
-    accepted price of never publishing a stale number.
+If you would rather not republish vendor text on a public page, set
+EDGE_DESC_SOURCE=metadata and `what` is built from Sharadar's industry, scale and
+location instead -- entirely our own data, at the cost of a thinner sentence.
 
-The fingerprint hashes the prompt text and the model name rather than a
-hand-bumped version constant -- the same reasoning as edge_lib's panel
-fingerprint: "remember to bump the version" is a rule that gets forgotten once
-and then lies forever.
+FAILURE BEHAVIOUR
+Never raises, never blocks a publish. Yahoo unreachable or rate-limited means the
+`what` line falls back to the metadata sentence; everything else is local
+arithmetic and always works. A description problem must not be able to stop the
+book going out, and must never change a number.
 """
 from __future__ import annotations
-import hashlib
 import json
 import logging
 import os
 import pathlib
+import re
 import threading
 
 import config
 
 log = logging.getLogger(__name__)
 
-MODEL = os.environ.get("EDGE_DESC_MODEL", "claude-sonnet-4-6")
 CACHE_PATH = pathlib.Path(os.environ.get(
     "EDGE_DESC_PATH", str(config.CACHE_DIR / "company_desc.json")))
 META_PATH = config.ARTIFACT_DIR / "company_meta.json"
+# "yahoo" (default) or "metadata" -- see the module docstring.
+SOURCE = os.environ.get("EDGE_DESC_SOURCE", "yahoo").strip().lower()
 
-# One writer at a time. gunicorn runs --threads 4 and two clicks of "Sync to
-# Vision" can land together; a read-modify-write of one JSON file from two
-# threads loses one thread's descriptions.
-#
-# The lock is deliberately held ACROSS the API call, not just the file write.
-# That serializes concurrent exports -- the second click waits rather than
-# billing a duplicate generation for the same book, and then finds the first
-# click's results already in the cache. The cost is that a second click blocks
-# for the length of one request; acceptable for a manual button, and much better
-# than two threads generating the same ten descriptions and one of them losing
-# the write.
+# One writer at a time: gunicorn runs --threads 4 and two clicks of "Sync to
+# Vision" can land together, and a read-modify-write of one JSON file from two
+# threads loses one thread's work. Held across the fetch too, so the second click
+# waits and then finds the first click's results already cached rather than
+# hitting Yahoo again for the same tickers.
 _LOCK = threading.Lock()
 
-_SYSTEM = """You write short factual company blurbs for a quantitative stock \
-newsletter. You will be given real metadata for companies a momentum model just \
-bought, and the model's actual reason for buying each one.
-
-Rules:
-- Exactly three fields per company: "what", "different", "why". One sentence each.
-- "what": what the business does and how it makes money. Concrete and specific.
-- "different": what separates it from its most obvious competitor or from the \
-rest of its industry. If you do not know something genuinely distinguishing, \
-describe its position in the industry instead of inventing a moat.
-- "why": the MODEL's reason, and ONLY the model's reason. You are given the \
-signal values -- restate what they mean in plain English. Never invent a \
-fundamental, valuation, product-cycle or macro thesis; this model does not read \
-financial statements and has no view on the company's future.
-- No hype, no adjectives like "leading" or "revolutionary", no price targets, no \
-recommendations, no forecasts.
-- If you are not confident what a company does, say so plainly in "what" rather \
-than guessing. A blank is better than a wrong fact.
-- Under 30 words per sentence.
-
-Reply with ONLY a JSON object mapping each ticker to {"what","different","why"}. \
-No markdown fences, no commentary."""
+_SCALE = {"1 - Nano": "nano-cap", "2 - Micro": "micro-cap", "3 - Small": "small-cap",
+          "4 - Mid": "mid-cap", "5 - Large": "large-cap", "6 - Mega": "mega-cap"}
 
 
-def _fingerprint() -> str:
-    return hashlib.sha256(f"{_SYSTEM}\x00{MODEL}\x00v1".encode()).hexdigest()[:12]
-
-
+# ---- cache -----------------------------------------------------------------
 def _load_cache() -> dict:
     if not CACHE_PATH.exists():
         return {}
     try:
         return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
     except Exception:
-        # A corrupt cache must never break an export -- regenerating always works.
+        # A corrupt cache must never break an export -- refetching always works.
         log.warning("description cache %s unreadable; starting fresh", CACHE_PATH,
                     exc_info=True)
         return {}
@@ -136,101 +103,153 @@ def industry_for(ticker: str) -> str:
     return m.get("industry") or m.get("sicindustry") or ""
 
 
-def _facts(holding: dict, meta: dict, signal_label: str) -> dict:
-    """The grounding facts handed to the model. Deliberately small: every field
-    here is something we actually hold, and the prompt forbids going beyond it."""
-    t = str(holding.get("ticker") or "").upper()
-    m = meta.get(t, {})
-    f = {"ticker": t,
-         "company_name": holding.get("name") or m.get("name") or t,
-         "sector": holding.get("sector") or "",
-         "industry": m.get("industry") or m.get("sicindustry") or "",
-         "headquarters": m.get("location") or "",
-         "website": m.get("companysite") or ""}
-    sig = holding.get("signal")
-    if sig is not None:
-        # The signal IS the reason. Stated as a percentage because that is what
-        # ret_12_1 is -- a trailing return, not a score.
-        f["model_signal"] = (f"{signal_label} = {float(sig) * 100:+.1f}%"
-                             if abs(float(sig)) < 20 else f"{signal_label} = {sig}")
-    if holding.get("weight") is not None:
-        f["weight_in_book"] = f"{float(holding['weight']) * 100:.0f}%"
-    if holding.get("rank") is not None:
-        f["rank_in_book"] = holding["rank"]
-    return {k: v for k, v in f.items() if v not in ("", None)}
+# ---- the four fields -------------------------------------------------------
+def _trim(summary: str, max_sentences: int = 2, max_chars: int = 320) -> str:
+    """First sentence or two of a business summary.
 
-
-def _generate(missing: list[dict], signal_label: str, model_rules: str) -> dict:
-    """One call for the whole book, so the model can differentiate the names from
-    each other in the "different" sentence. Returns {ticker: {...}}; tickers it
-    fails to return are simply left out and the caller degrades gracefully."""
-    import anthropic
-    client = anthropic.Anthropic()
-    payload = {"how_this_model_picks": model_rules, "companies": missing}
-    resp = client.messages.create(
-        model=MODEL, max_tokens=2000, system=_SYSTEM,
-        messages=[{"role": "user", "content": json.dumps(payload, indent=1)}])
-    txt = "".join(b.text for b in resp.content if b.type == "text").strip()
-    if txt.startswith("```"):                     # strip a fence if one appears
-        txt = txt.split("\n", 1)[1].rsplit("```", 1)[0]
-    out = json.loads(txt)
-    clean = {}
-    for t, v in (out or {}).items():
-        if isinstance(v, dict):
-            clean[str(t).upper()] = {k: str(v.get(k) or "").strip()
-                                     for k in ("what", "different", "why")}
-    return clean
-
-
-def describe(book: list[dict], book_date: str, signal_label: str = "12-1 momentum",
-             model_rules: str = "") -> dict:
-    """{ticker: {industry, what, different, why}} for every holding in `book`.
-
-    Always returns an entry per holding, even with no API key or a failed call --
-    `industry` comes from Sharadar and needs no model, so the page can show the
-    category and simply omit the prose. Never raises: a description problem must
-    not be able to block publishing the book.
+    Yahoo's summaries run to a wall of text ("...in the United States, Europe,
+    the Middle East, Africa, Asia, and internationally") and the ask was for a
+    MINI description. Split on sentence ends only where the next character is a
+    space and a capital, so "Inc." and "U.S.A." don't cut the sentence in half.
     """
+    s = " ".join(str(summary or "").split())
+    if not s:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", s)
+    out = " ".join(parts[:max_sentences]).strip()
+    if len(out) > max_chars:
+        out = " ".join(parts[:1]).strip()
+    if len(out) > max_chars:
+        out = out[:max_chars].rsplit(" ", 1)[0] + "…"
+    return out
+
+
+def _metadata_sentence(ticker: str, name: str, m: dict) -> str:
+    """`what` built only from data we license. Thinner than Yahoo's prose, but
+    ours, and it always works."""
+    industry = m.get("industry") or m.get("sicindustry") or ""
+    scale = _SCALE.get(m.get("scalemarketcap", ""), "")
+    loc = m.get("location") or ""
+    bits = [b for b in (scale, industry.lower() if industry else "") if b]
+    lead = f"{name} is a " + " ".join(bits) + " company" if bits else f"{name} is listed"
+    if loc:
+        lead += f", based in {loc}"
+    return lead + "."
+
+
+def _yahoo_summary(ticker: str) -> str:
+    """Yahoo's business summary. Returns '' on any failure -- offline, rate
+    limited, delisted, schema change. The caller falls back to metadata."""
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info or {}
+        return _trim(info.get("longBusinessSummary") or "")
+    except Exception as e:                                      # noqa: BLE001
+        log.info("yahoo summary unavailable for %s: %s: %s", ticker,
+                 type(e).__name__, e)
+        return ""
+
+
+def _fmt_move(v) -> str:
+    """A trailing return, written the way a person would say it.
+
+    Momentum books collect extreme winners, and this model's universe really does
+    produce them: SNDK's 12-1 reading in the 2026-07 book was +3818%, verified
+    against two independent sources (Sharadar's adjusted close and Yahoo's
+    price x shares both land near a $180B cap on a ~$1,260 share price -- it
+    genuinely rose ~30x). Printing "+3817.8%" is accurate and reads like a
+    formatting bug, so past +500% this switches to a multiple."""
+    f = float(v)
+    if f >= 5.0:
+        return f"a {f + 1:.0f}x rise"
+    return f"a {f * 100:+.1f}% move"
+
+
+def _standing(h: dict) -> str:
+    """Where this name sits in the field it was chosen from. Pure arithmetic on
+    numbers the tracker already computed (see _current_book)."""
+    pct, n = h.get("pctile"), h.get("n_eligible")
+    if pct is None or not n:
+        return ""
+    top = max(0.1, round((1.0 - float(pct)) * 100, 1))
+    mc = h.get("mcap")
+    size = ""
+    if mc:
+        bn = f"{float(mc)/1e9:,.0f}"
+        art = "an" if bn[0] in "8" or bn.startswith("11") or bn.startswith("18") else "a"
+        size = f" It carried {art} ${bn}B market cap at the rebalance."
+    return (f"Its momentum reading put it in the top {top:g}% of the {int(n):,} "
+            f"companies that cleared the model's size floor this month.{size}")
+
+
+def _why(h: dict, rank: int, cfg: dict) -> str:
+    """The model's actual reason, assembled from the actual numbers.
+
+    Deliberately mechanical. This model does not read a filing or hold a view on
+    any company; saying anything richer here would be inventing a thesis it does
+    not have."""
+    sig = h.get("signal")
+    sig_txt = (f"{_fmt_move(sig)} over the last twelve months, excluding the most "
+               f"recent month — the only thing this model ranks on"
+               if isinstance(sig, (int, float)) and sig == sig else
+               "its 12-1 momentum reading, the only thing this model ranks on")
+    why = f"Ranked {rank} of {cfg.get('n', 10)} in this month's book on {sig_txt}."
+    cap = cfg.get("sector_cap")
+    sec = h.get("sector")
+    if cap and sec:
+        why += (f" It holds one of the {cap} places the model allows any single "
+                f"sector, which is why a stronger {sec} name may be absent.")
+    return why
+
+
+# ---- entry point -----------------------------------------------------------
+def describe(book: list[dict], book_date: str, cfg: dict | None = None) -> dict:
+    """{ticker: {industry, what, standing, why}} for every holding in `book`.
+
+    `book` rows come from edge_tracker_lib._current_book, so they carry signal,
+    sector, pctile, n_eligible and mcap. `cfg` is the backtest spec dict.
+
+    Always returns an entry per holding. Only `what` can come up empty, and only
+    if Yahoo is unreachable AND the metadata sidecar is missing.
+    """
+    cfg = cfg or {}
     meta = _company_meta()
-    fp = _fingerprint()
-    out, missing = {}, []
+    out: dict[str, dict] = {}
 
     with _LOCK:
         cache = _load_cache()
+        dirty = False
         for i, h in enumerate(book):
             t = str(h.get("ticker") or "").upper()
             if not t:
                 continue
-            out[t] = {"industry": meta.get(t, {}).get("industry")
-                      or meta.get(t, {}).get("sicindustry") or ""}
-            hit = cache.get(f"{t}|{book_date}|{fp}")
-            if hit:
-                out[t].update(hit)
-            else:
-                missing.append(_facts({**h, "rank": i + 1}, meta, signal_label))
+            m = meta.get(t, {})
+            name = h.get("name") or m.get("name") or t
 
-        if missing and os.environ.get("ANTHROPIC_API_KEY"):
-            try:
-                got = _generate(missing, signal_label, model_rules)
-            except Exception as e:                          # noqa: BLE001
-                log.warning("description generation failed: %s: %s",
-                            type(e).__name__, e)
-                got = {}
-            for t, v in got.items():
-                if t in out and any(v.values()):
-                    out[t].update(v)
-                    cache[f"{t}|{book_date}|{fp}"] = v
-            if got:
-                # Bound the file: this accrues one entry per (name, rebalance)
-                # forever otherwise, on a 1GB disk shared with the paper record.
-                # Evict by BOOK DATE, not by key order -- keys start with the
-                # ticker, so a plain sort would throw away every name beginning
-                # with A and keep the Zs, which is not an eviction policy.
-                if len(cache) > 4000:
-                    cache = dict(sorted(cache.items(),
-                                        key=lambda kv: kv[0].split("|")[1:2])[-2000:])
-                _save_cache(cache)
-        elif missing:
-            log.info("no ANTHROPIC_API_KEY — publishing %d holdings without prose",
-                     len(missing))
+            # `what` is cached by TICKER ALONE, with no book date in the key: a
+            # company's line of business does not change between rebalances, so
+            # re-fetching it monthly would be ten needless network calls for
+            # identical text. `standing` and `why` are recomputed every time
+            # because they quote this month's numbers.
+            key = f"what|{t}|{SOURCE}"
+            what = cache.get(key)
+            if what is None:
+                what = _yahoo_summary(t) if SOURCE == "yahoo" else ""
+                if not what:
+                    what = _metadata_sentence(t, name, m)
+                cache[key] = what
+                dirty = True
+
+            out[t] = {
+                "industry": m.get("industry") or m.get("sicindustry") or "",
+                "what": what,
+                "standing": _standing(h),
+                "why": _why(h, i + 1, cfg),
+            }
+        if dirty:
+            # Bound the file. Keyed by ticker, so it grows with the number of
+            # distinct names ever held -- slow, but not bounded by anything.
+            if len(cache) > 5000:
+                cache = dict(sorted(cache.items())[-2500:])
+            _save_cache(cache)
     return out

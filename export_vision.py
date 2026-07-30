@@ -38,21 +38,6 @@ LONG_WINDOW = "20Y"   # full ~20-year track-record curve, shown alongside the pr
 # regardless of which WINDOW drives the headline curve above.
 # basket size n=10 is the product book (edge_lib.EDGE_SPEC / edge_tracker_lib.N)
 
-# Handed to the description writer so the "why we bought it" sentence describes
-# THIS model rather than a generic fund. Kept next to the export (not inside
-# company_desc) because it is a statement about the shipped spec, and the values
-# are interpolated from the backtest's own spec dict rather than retyped.
-_MODEL_RULES = (
-    "A systematic momentum model. Every {months} month(s), on the first trading "
-    "day, it ranks US stocks above ${floor}B market cap by 12-1 momentum (the "
-    "trailing 12-month return excluding the most recent month) and buys the top "
-    "{n} equally weighted, capped at {cap} names per sector. It reads no "
-    "financial statements, has no view on any company's products, management or "
-    "valuation, and holds each name until the next rebalance. Exposure is cut "
-    "when the S&P is below its 200-day average and scaled down when the book's "
-    "own volatility runs hot.")
-
-
 def _rebal_label(spec: dict) -> str:
     """How the rebalance clock is described on the product page.
 
@@ -94,24 +79,25 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
     spec = bt["spec"]
     # `signal`, not `accel`: the book key was renamed when acceleration was
     # retired, and reading the old name published a null for every holding.
+    # `rows` keeps the tracker's full record (pctile / n_eligible / mcap), which
+    # the write-up needs; `book` is the trimmed shape Vision publishes. Those
+    # ranking internals stay out of the payload -- the page has no use for them
+    # and they would be one more thing to keep consistent on the far side.
+    rows = tr["current_book"]
     book = [{
         "ticker": b["ticker"], "name": b["name"], "sector": b["sector"],
         "weight": b["weight"], "signal": b.get("signal"),
         "signal_col": b.get("signal_col"), "price": b.get("price"),
-    } for b in tr["current_book"]]
+    } for b in rows]
 
-    # Industry + three-sentence write-up per holding. Generated once per
-    # (ticker, book date) and cached, so a new name entering the book at the next
-    # rebalance is described automatically with no list to maintain. Never fatal:
-    # describe() returns an entry per holding regardless, and a name with no prose
-    # simply publishes its category. The book is data; this is commentary.
+    # Industry + write-up per holding. `what` is fetched once per ticker and
+    # cached forever; `standing` and `why` are recomputed each run because they
+    # quote this month's numbers. A new name entering the book is described
+    # automatically, with no list to maintain. Never fatal: describe() returns an
+    # entry per holding regardless. The book is data; this is commentary, and it
+    # cannot change a number.
     try:
-        desc = company_desc.describe(
-            book, tr["book_date"],
-            signal_label=spec.get("signal") or "momentum",
-            model_rules=_MODEL_RULES.format(
-                floor=spec.get("mcap_floor_bn"), cap=spec.get("sector_cap"),
-                months=spec.get("rebal_months"), n=len(book)))
+        desc = company_desc.describe(rows, tr["book_date"], cfg=spec)
     except Exception as e:                                      # noqa: BLE001
         desc = {}
         print(f"  warning: descriptions unavailable ({type(e).__name__}: {e})")
@@ -119,7 +105,7 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
         d = desc.get(str(b["ticker"]).upper(), {})
         b["industry"] = d.get("industry") or ""
         b["what"] = d.get("what") or ""
-        b["different"] = d.get("different") or ""
+        b["standing"] = d.get("standing") or ""
         b["why"] = d.get("why") or ""
 
     return {
@@ -152,13 +138,13 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
         "windows": bt["windows"],
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "disclaimer": "Backtest, net of ~10bps costs. Not a forecast or investment advice.",
-        # Say where the prose came from. The numbers are computed; the sentences
-        # are written by a language model from the metadata and the model's own
-        # signal values. A reader is entitled to know which is which.
-        "descriptions_note": ("Company descriptions are written by an AI model from "
-                              "company metadata and this model's own signal values. "
-                              "They are unreviewed commentary, not research, and they "
-                              "played no part in choosing the stocks."),
+        # Say where each part came from. The business line is a third party's
+        # text; the ranking and sector notes are our own arithmetic. A reader is
+        # entitled to know which is which, and neither is a recommendation.
+        "descriptions_note": ("Business descriptions are sourced from public company "
+                              "profiles. The ranking and sector-cap notes are computed "
+                              "from this model's own numbers. Neither is research, and "
+                              "neither played any part in choosing the stocks."),
     }
 
 
