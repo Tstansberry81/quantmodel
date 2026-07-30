@@ -1,6 +1,6 @@
 # Deploying the live site (Render)
 
-This is a Flask app with heavy compute (a ~350 MB backtest panel, 1–2 min runs,
+This is a Flask app with heavy compute (a ~141 MB backtest panel, 1–2 min runs,
 pandas/scipy/sklearn/hmmlearn). It needs a **real Python web service**, not a
 static/serverless host — Render (or Railway/Fly) works; **Netlify does not**.
 
@@ -54,9 +54,11 @@ zip we made earlier). **Rotate it at fiscal.ai.** The live site does NOT need it
    it's cached and fast.
 
 ## Notes / gotchas
-- **Memory:** the panel peaks ~0.8–1.2 GB in RAM (measured on the old 2-month
-  clock; the monthly clock adopted 2026-07-30 roughly doubles the default panel,
-  so watch the service events for OOM after that deploy). `render.yaml` uses the **standard
+- **Memory:** the shipped panel is 141 MB on disk; BUILDING one peaks far
+  higher (it holds every name's price arrays at once). Two concurrent builds
+  OOM-killed the 2 GB instance on 2026-07-30 — `load_edge_panel` now serializes
+  builds, and a republished bundle means the host unpickles instead of
+  building. `render.yaml` uses the **standard
   (2 GB)** plan. The free/starter 512 MB tiers will likely OOM.
 - **Cold starts:** on plans that sleep when idle, the first visitor after a sleep
   waits for spin-up + the first backtest. A non-sleeping plan avoids this.

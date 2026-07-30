@@ -8,13 +8,19 @@ services:
     # old 2-month clock). The 512MB free/starter tiers will likely OOM — use a
     # >=2GB plan. Drop to "starter" only if you slim the data bundle first.
     #
-    # WATCH THIS after 2026-07-30: the monthly clock doubles the number of
-    # rebalances in the DEFAULT panel, so that panel is roughly twice the size it
-    # was (~179MB -> ~350MB on the deploy-trimmed artifact). The total across all
-    # four selectable clocks is about unchanged — a 6M panel has a sixth of the
-    # rebalances of a 1M one — but the single resident panel on a normal page
-    # load is the big one now. If deploys start dying, check for OOM in the
-    # service events before assuming a code fault.
+    # MEASURED 2026-07-30: the shipped monthly panel is 141MB on the
+    # deploy-trimmed artifact (1,814 names, 330 rebalances). An earlier comment
+    # here guessed ~350MB by scaling from the research panel; that panel keeps
+    # ~4,169 rows per rebalance because it uses real PIT membership, while the
+    # deploy panel is capped at the top 1,000 by market cap.
+    #
+    # The 2Gi OOM on 2026-07-30 was NOT the panel's resident size. lru_cache
+    # holds no lock across the wrapped call, so the boot warm-up thread and an
+    # incoming request both missed and both BUILT the panel at once -- and a
+    # build peaks far above the finished pickle because it holds every name's
+    # price arrays at the same time. Fixed with a build lock in load_edge_panel.
+    # If deploys start dying again, check the service events for oomKilled before
+    # assuming a code fault.
     plan: standard
     buildCommand: "pip install -r requirements.txt && python fetch_data.py"
     # timeout 240: a real backtest is ~30-60s (cold panel build for a non-default
@@ -47,11 +53,11 @@ services:
       # start, rather than on every one.
       - key: EDGE_PANEL_CACHE_DIR
         value: /var/data
-      # Generated company write-ups for the Vision book. On the persistent disk
-      # because the alternative is re-billing an LLM call for all ten holdings
-      # every time someone clicks "Sync to Vision" after a restart. Needs
-      # ANTHROPIC_API_KEY (already set for the in-app chat assistant); without it
-      # the book still publishes, carrying its Sharadar industry label and no prose.
+      # Cache for the per-holding company write-ups. On the persistent disk so a
+      # restart does not re-fetch ten Yahoo business summaries. No API key is
+      # involved: the descriptions are Yahoo text plus arithmetic on the model's
+      # own numbers (see company_desc.py). Losing this file costs one slow sync,
+      # never a wrong number.
       - key: EDGE_DESC_PATH
         value: /var/data/company_desc.json
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
