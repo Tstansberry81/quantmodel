@@ -45,7 +45,7 @@ function render(d){
   // Survivorship has been measured (~0.2pts) rather than flagged as unknown.
   document.getElementById('headline').innerHTML = [
     ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong). Note: √252·mean/σ, with NO risk-free subtraction, applied identically to the benchmarks.'],
-    ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss (measured daily). Core of the product story — far shallower than the S&P.'],
+    ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss, measured on the daily curve. Shallower than the S&P over the same history, but this is a concentrated 10-stock momentum book and the gap is not large — read it alongside the caveats.'],
     ['Sortino', fmtN(m.sortino,2), '', 'Return per unit of downside risk — like Sharpe but only losses count as risk'],
     ['Excess vs S&P', (alpha>=0?'+':'')+fmtPct(alpha), cls(alpha), 'Annualized return above the S&P 500, on survivorship-free history.'],
     ['CAGR (net)', fmtPct(m.cagr), cls(m.cagr), 'Compound annual growth after ~10bps costs, on survivorship-free history. Still a BACKTEST — the rules were chosen knowing how this period turned out (see caveats below).'],
@@ -118,16 +118,16 @@ function render(d){
     '<b>Read this before quoting any number.</b> Returns are net of '+(s.cost_bps||10)+'bps trading costs, '
     +'including the cost of changing exposure. '
     +'<b>Survivorship is no longer the headline risk here — it has been measured.</b> The price history is '
-    +'survivorship-free: 7,826 delisted companies, 64% of the dataset, spread evenly across every year since 1999, '
-    +'590 of which once cleared the $10B floor. The model visibly eats their losses (its worst single positions '
-    +'are −63%, −62%, −62%, and five of the ten worst later delisted). Residual survivorship exposure is about '
+    +'survivorship-free: 7,851 delisted companies, 65% of the dataset, spread evenly across every year since 1999, '
+    +'534 of which once cleared the $10B floor. The model visibly eats their losses (its worst single positions '
+    +'are −71%, −57%, −49%, and three of the ten worst later delisted). Residual survivorship exposure is about '
     +'<b>0.2 percentage points of CAGR</b>, versus the ~8 points that inflated the previous version of this model. '
     +'What remains, honestly: '
     +'<b>(1) It is still a backtest.</b> These rules were chosen knowing how this history turned out. That is the '
     +'largest risk on this page and no amount of clean data fixes it — only the '
     +'<a href="/edge-tracker" style="color:#d4af37">forward record</a> can. '
     +'<b>(2) Delisted prices are frozen, not marked down</b> — a name that stops trading is held flat rather than '
-    +'sold. Correct for an acquisition, generous for a bankruptcy, and capped at 1.1% of positions. '
+    +'sold. Correct for an acquisition, generous for a bankruptcy, and capped at 0.6% of positions. '
     +'<b>(3) The liquidity floor uses market cap</b> as a full-history proxy for tradability. '
     +'<b>(4) The recent window is unusually momentum-friendly</b>, which flatters the short windows most. '
     +'<b>(5) Sharpe here is √252·mean/σ with no risk-free subtraction</b> — a return-to-volatility ratio. It reads '

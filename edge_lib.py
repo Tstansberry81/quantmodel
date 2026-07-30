@@ -1346,7 +1346,13 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     dstr = [str(dts[i].date()) for i in keep]
     ann_to = round(avg_to * (252.0 / hold), 1)
     return {
-        "ok": True, "n_rebalances": int(k / hold),
+        # COUNT the rebalances in the window, don't divide days by hold. That
+        # arithmetic was exact on a fixed stride and is merely close on a
+        # calendar grid, where spacing runs 15-23 trading days -- it reported 329
+        # for a panel holding 330. Counting is right under either convention.
+        "ok": True,
+        "n_rebalances": int(((prim[0] >= dts[0]) & (prim[0] <= dts[-1])).sum())
+                        if prim and prim[0] is not None else int(k / hold),
         "period": [str(dts[0].date()), str(dts[-1].date())],
         "period_detail": period_detail,
         "spec": {"signal": _signal_label(sig), "hold_days": hold,
