@@ -159,29 +159,3 @@ input.num:focus{outline:none;box-shadow:0 0 0 2px rgba(59,130,246,.35)}
   border:1px solid var(--border);border-radius:6px;padding:4px 9px;font-size:12px}
 .port-chip b{color:var(--text);font-weight:700}
 
-/* ---- chat assistant ---- */
-#chat-bubble{position:fixed;bottom:20px;right:20px;z-index:9998;width:56px;height:56px;border-radius:50%;
-  border:1px solid #2b3340;background:#3b82f6;color:#fff;font-size:24px;cursor:pointer;
-  box-shadow:0 6px 20px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;transition:transform .12s}
-#chat-bubble:hover{transform:scale(1.06)}
-#chat-panel{position:fixed;bottom:20px;right:20px;z-index:9999;width:360px;max-width:calc(100vw - 32px);
-  height:480px;max-height:calc(100vh - 40px);display:flex;flex-direction:column;background:#0d1117;
-  border:1px solid #21262d;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.55);overflow:hidden}
-#chat-panel[hidden]{display:none}
-#chat-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;
-  border-bottom:1px solid #21262d;background:#11161d;color:#e6edf3}
-#chat-close{background:none;border:none;color:#8b949e;font-size:22px;line-height:1;cursor:pointer;padding:0 4px}
-#chat-close:hover{color:#e6edf3}
-#chat-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
-.chat-msg{max-width:85%;padding:8px 11px;border-radius:12px;font-size:13.5px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
-.chat-msg.user{align-self:flex-end;background:#3b82f6;color:#fff;border-bottom-right-radius:4px}
-.chat-msg.bot{align-self:flex-start;background:#1c2330;color:#e6edf3;border-bottom-left-radius:4px}
-.chat-msg.bot.thinking{color:#8b949e;font-style:italic}
-.chat-hint{color:#8b949e;font-size:12.5px;text-align:center;margin:auto 8px;line-height:1.6}
-#chat-form{display:flex;gap:8px;padding:10px;border-top:1px solid #21262d;background:#11161d}
-#chat-input{flex:1;background:#0d1117;border:1px solid #2b3340;border-radius:9px;color:#e6edf3;
-  padding:9px 11px;font-size:13.5px;outline:none}
-#chat-input:focus{border-color:#3b82f6}
-#chat-send{background:#3b82f6;border:none;border-radius:9px;color:#fff;width:40px;font-size:16px;cursor:pointer}
-#chat-send:disabled{opacity:.5;cursor:default}
-#chat-foot{padding:6px 12px 9px;color:#6e7681;text-align:center;border-top:1px solid #161b22}

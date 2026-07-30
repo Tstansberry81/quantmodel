@@ -442,81 +442,25 @@ def api_sync_vision():
     return _safe(lambda: export_vision.export_to_vision(window=window, hold=hold))
 
 
-# ---- in-app chat assistant ("explain the numbers on screen") ----------------
-_CHAT_MODEL = "claude-sonnet-4-6"      # cheap, strong at plain-language explanation
-_chat_hits: dict[str, list] = defaultdict(list)
-_chat_client = None
-
-
+# ---- shared request helpers ------------------------------------------------
 def _client_ip() -> str:
     fwd = request.headers.get("X-Forwarded-For", "")
     return (fwd.split(",")[0].strip() if fwd else request.remote_addr) or "?"
 
+def _rate_ok(ip: str, limit: int, window: int, hits: dict) -> bool:
+    """Sliding-window per-IP limiter over the caller's bucket.
 
-def _rate_ok(ip: str, limit: int = 20, window: int = 60, hits=None) -> bool:
-    """Sliding-window per-IP limiter. `hits` selects the bucket so the chat and the
-    compute endpoints are limited independently."""
+    `hits` used to default to the chat assistant's bucket. With the chat removed
+    a default would silently share one bucket between unrelated endpoints, so it
+    is now required — the caller states which limiter it means."""
     now = time.time()
-    q = (_chat_hits if hits is None else hits)[ip]
+    q = hits[ip]
     while q and q[0] < now - window:
         q.pop(0)
     if len(q) >= limit:
         return False
     q.append(now)
     return True
-
-
-_CHAT_SYSTEM = (
-    "You are a concise assistant embedded in a short-term quantitative trading research "
-    "dashboard. Answer the user's question about the numbers and data shown on the current "
-    "page, in plain, jargon-light language a non-expert can follow.\n\n"
-    "RULES:\n"
-    "- Ground every answer in the PAGE DATA provided. Do not invent figures that aren't in it; "
-    "if the data doesn't contain the answer, say so plainly.\n"
-    "- Explain and contextualize; define terms (Sharpe, drawdown, alpha, etc.) simply.\n"
-    "- This is research, NOT investment advice — never tell the user to buy or sell anything.\n"
-    "- Keep answers short: a few sentences, no preamble.\n"
-)
-
-
-@app.post("/api/chat")
-def api_chat():
-    if not _rate_ok(_client_ip()):
-        return jsonify({"ok": False, "reason": "Too many messages — please wait a moment."})
-    body = request.get_json(silent=True) or {}
-    msg = (body.get("message") or "").strip()[:2000]
-    if not msg:
-        return jsonify({"ok": False, "reason": "Empty message."})
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return jsonify({"ok": False, "reason": "Chat isn't configured (no API key set)."})
-
-    page = (body.get("page") or "")[:200]
-    context = (body.get("context") or "")[:8000]
-    # sanitize the last few turns of history
-    hist = []
-    for h in (body.get("history") or [])[-6:]:
-        role = h.get("role")
-        content = str(h.get("content") or "")[:2000]
-        if role in ("user", "assistant") and content:
-            hist.append({"role": role, "content": content})
-
-    try:
-        global _chat_client
-        if _chat_client is None:
-            import anthropic
-            _chat_client = anthropic.Anthropic()
-        system = f"{_CHAT_SYSTEM}\nCURRENT PAGE: {page}\n\nPAGE DATA (what's on screen):\n{context}"
-        resp = _chat_client.messages.create(
-            model=_CHAT_MODEL,
-            max_tokens=1024,
-            system=system,
-            messages=hist + [{"role": "user", "content": msg}],
-        )
-        reply = "".join(b.text for b in resp.content if b.type == "text").strip()
-        return jsonify({"ok": True, "reply": reply or "(no response)"})
-    except Exception as e:                       # noqa: BLE001
-        app.logger.exception("chat error")
-        return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
 
 if __name__ == "__main__":

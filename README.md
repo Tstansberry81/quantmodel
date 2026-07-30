@@ -66,7 +66,7 @@ Supporting builders (each needs `FISCAL_API_KEY` where noted):
   names from Norgate; `norgate_devalidate.py` re-checks the de-bias claim.
 
 Secrets live in a gitignored `.env` at the repo root (`FISCAL_API_KEY`,
-`ANTHROPIC_API_KEY`, optionally `GITHUB_TOKEN`); importing `config` loads it for
+optionally `GITHUB_TOKEN` / `RENDER_API_KEY`); importing `config` loads it for
 every entrypoint. On Render, set them as real environment variables.
 
 ## Run the site
@@ -83,9 +83,12 @@ every entrypoint. On Render, set them as real environment variables.
   the forward-accruing snapshot record in `data/cache/edge_tracker.json`.
 - **Model** (`/model`) — the full equation spec.
 - **APIs** — `/api/edge_backtest`, `/api/edge_tracker`, `/api/meta`,
-  `/api/sync_vision` (publishes to Vision), `/api/chat` (in-app explainer;
-  needs `ANTHROPIC_API_KEY`). Compute endpoints are cached across the whole
-  selector space, rate-limited per IP, and warmed on boot.
+  `/api/sync_vision` (publishes to Vision), `/api/diag` (panel fingerprint vs
+  what production expects, plus thread stacks — the fastest way to answer "why
+  is it slow"). Compute endpoints are cached across the whole selector space,
+  rate-limited per IP, serialized by one compute lock, and warmed on the first
+  request (never at import: a lock held across gunicorn's fork deadlocks the
+  worker).
 
 ## Vision export (consumer product)
 
