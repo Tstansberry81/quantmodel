@@ -867,12 +867,44 @@ EDGE_SPEC = dict(
     mcap_floor=1e10,            # $10B. Momentum degrades monotonically as the
                                 # floor drops -- at $200M the same model returns
                                 # -14.5%/yr excess. This floor is load-bearing.
-    fcf_screen=False,           # OFF. On the production daily basis the screen
-                                # costs 3.8pts of CAGR and 0.06 Sharpe for no
-                                # drawdown benefit (-46% vs -47%). It looked
-                                # good only on the per-rebalance basis, which
-                                # understated drawdown. Kept implemented for
-                                # research; not shipped.
+    # ---- solvency screens (2026-07-30) ------------------------------------
+    # The first fundamental filters this model has ever shipped, and they are
+    # about SOLVENCY, not valuation. That distinction is the whole result.
+    #
+    # Ten screens were tested on the shipped monthly grid. Valuation caps (P/E
+    # <= 40, cheapest-70%) cost Sharpe in every form. Earnings-quality screens
+    # did nothing for drawdown -- GP/assets, which had been paper-tracked for
+    # weeks as a validated upgrade, came out WORSE than shipped on every axis.
+    # Only these two improved return and risk together:
+    #
+    #   shipped, no screen    17.48% CAGR / -45.69% maxDD / Sharpe 0.900
+    #   + both screens        17.11% CAGR / -28.58% maxDD / Sharpe 0.910
+    #
+    # 0.37pts of CAGR for 17 points of drawdown. It also DOMINATES de-levering:
+    # dropping vol_target to 15% reaches the same -28.7% drawdown while giving
+    # up 3.5pts of CAGR (13.96%). Cutting exposure throttles the winners too;
+    # removing insolvent names does not.
+    #
+    # WHY IT SHOULD WORK, stated before the statistics: this model's worst
+    # drawdown is a momentum UNWIND, and the names that fall hardest in one are
+    # those that cannot fund themselves when financing dries up. A solvency
+    # story -- which is why a solvency screen bites and a P/E cap does not.
+    #
+    # EVIDENCE IT IS NOT DATA-MINED (it is the best of ten, so this matters):
+    # better in 4 of 4 independent sub-eras (-23.5/-19.2/-24.0/-28.6% vs
+    # -25.6/-20.9/-29.1/-45.7%); still additive after vol targeting (at vol 15%
+    # it takes -28.7% -> -21.6%); fcf_margin is 100% populated in every era, so
+    # the screen is never a data-availability filter wearing a fundamental
+    # label; and the book still fills 10 names across >=5 sectors at every
+    # rebalance. NOT CONFIRMED OUT OF SAMPLE -- only the forward record can.
+    fcf_positive=True,          # require trailing FCF margin > 0
+    debt_ebitda_max=4.0,        # drop names levered past 4x EBITDA (NaN kept --
+                                # a missing ratio is usually no meaningful debt)
+    fcf_screen=False,           # DISTINCT from fcf_positive: the older
+                                # percentile-based screen, still OFF. On the
+                                # production daily basis it cost 3.8pts of CAGR
+                                # and 0.06 Sharpe for no drawdown benefit
+                                # (-46% vs -47%). Kept for research.
     corr_cap=None,              # OFF: it pushes the book away from the highest-
                                 # momentum names, i.e. away from the signal.
                                 # Costs 2.5pts of excess.
@@ -1027,11 +1059,34 @@ def _blend_select(d, asof, n, weights, corr_cap, corr_lookback, growth_mix, grow
 # entries are never evicted: total heavy work is then bounded at 120 per worker for
 # the life of the process, no matter how many parameter combos get requested.
 # Entries are small (a handful of ~250-float arrays), so this costs ~MBs.
-def _candidates(df, mcap_floor, name_trend=False):
-    """Per-rebalance candidate set: the size floor, plus optionally the name's own
-    200dMA trend. Shared by _edge_full and _select_holds so the two selection
-    loops cannot drift apart (they already duplicate the loop body)."""
+def _candidates(df, mcap_floor, name_trend=False,
+                fcf_positive=False, debt_ebitda_max=None):
+    """Per-rebalance candidate set: the size floor, the two SOLVENCY screens, and
+    optionally the name's own 200dMA trend.
+
+    Shared by _edge_full, _select_holds AND the tracker's current-book view, so
+    the three selection paths cannot drift apart. That is not hypothetical: the
+    tracker once ran without the sector cap while the page said it had one, and
+    the live book disagreed with the backtest about what the model even holds.
+
+    THE SOLVENCY SCREENS (added 2026-07-30). Both are point-in-time, read from
+    fundamentals already lagged 90 days in the panel.
+
+      fcf_positive     -- drop names whose trailing FCF margin is <= 0.
+      debt_ebitda_max  -- drop names levered beyond this multiple.
+
+    Missing data is treated DIFFERENTLY on purpose. fcf_margin is 100% populated
+    in every era, so a NaN there is a genuine oddity and dropping it costs
+    nothing. debt_ebitda is 97-100% populated, and a missing value is usually a
+    company with no meaningful debt -- excluding those would screen out the
+    safest names, so NaN is KEPT. Getting this backwards turns a leverage cap
+    into a data-availability filter (RESEARCH_RULES #6)."""
     d = df[df["pit_mcap"] >= mcap_floor] if mcap_floor else df
+    if fcf_positive and "fcf_margin" in d.columns:
+        d = d[pd.to_numeric(d["fcf_margin"], errors="coerce") > 0]
+    if debt_ebitda_max is not None and "debt_ebitda" in d.columns:
+        _de = pd.to_numeric(d["debt_ebitda"], errors="coerce")
+        d = d[(_de <= debt_ebitda_max) | _de.isna()]
     if name_trend and "px_ma200" in d.columns:
         d = d[d["px_ma200"] >= 1.0]
     return d
@@ -1040,7 +1095,8 @@ def _candidates(df, mcap_floor, name_trend=False):
 @lru_cache(maxsize=160)
 def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                signal_key, growth_mix=0.0, growth_thresh=0.15, fcf_screen=False,
-               sector_cap=None, name_trend=False, rebal_months=None):
+               sector_cap=None, name_trend=False, rebal_months=None,
+               fcf_positive=False, debt_ebitda_max=None):
     """Compute the full-history Edge once (cached). Returns the per-period gross
     & net returns, turnover, and aligned S&P / Nasdaq returns.
 
@@ -1050,7 +1106,7 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
     pan = load_edge_panel(hold=hold, rebal_months=rebal_months)
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
-        d = _candidates(df, mcap_floor, name_trend)
+        d = _candidates(df, mcap_floor, name_trend, fcf_positive, debt_ebitda_max)
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
                             growth_mix, growth_thresh, fcf_screen=fcf_screen,
                             sector_cap=sector_cap)
@@ -1070,11 +1126,11 @@ def _edge_full(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_b
 # ---- daily buy-and-hold simulation + staggered sleeves ----------------------
 def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
                   growth_mix, growth_thresh, fcf_screen=False, sector_cap=None,
-                  name_trend=False):
+                  name_trend=False, fcf_positive=False, debt_ebitda_max=None):
     """Full-spec per-rebalance selection + membership turnover for one panel."""
     holds, turn, prev = [], [], None
     for i, df in enumerate(pan.panels):
-        d = _candidates(df, mcap_floor, name_trend)
+        d = _candidates(df, mcap_floor, name_trend, fcf_positive, debt_ebitda_max)
         cks = _blend_select(d, pan.bdates[i], n, weights, corr_cap, corr_lookback,
                             growth_mix, growth_thresh, fcf_screen=fcf_screen,
                             sector_cap=sector_cap)
@@ -1087,7 +1143,8 @@ def _select_holds(pan, n, weights, mcap_floor, corr_cap, corr_lookback,
 @lru_cache(maxsize=64)
 def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
                          corr_lookback, growth_mix, growth_thresh, fcf_screen=False,
-                         sector_cap=None, name_trend=False, rebal_months=None):
+                         sector_cap=None, name_trend=False, rebal_months=None,
+                         fcf_positive=False, debt_ebitda_max=None):
     """Selection is the SAME for the net and gross backtest passes (cost doesn't
     change which names are picked), and it's the dominant cost (~8s/sleeve via the
     correlation cap). Cache it on the hashable spec so the gross pass — and repeat
@@ -1096,7 +1153,8 @@ def _select_holds_cached(hold, offset_days, n, signal_key, mcap_floor, corr_cap,
     holds, turn = _select_holds(pan, n, dict(signal_key), mcap_floor, corr_cap,
                                 corr_lookback, growth_mix, growth_thresh,
                                 fcf_screen=fcf_screen, sector_cap=sector_cap,
-                                name_trend=name_trend)
+                                name_trend=name_trend, fcf_positive=fcf_positive,
+                                debt_ebitda_max=debt_ebitda_max)
     return pan, holds, turn
 
 
@@ -1191,7 +1249,8 @@ def _apply_vol_target(model, target, lookback, cap, cost_bps):
 def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_bps,
                 signal_key, growth_mix, growth_thresh, stagger, continuous_regime=False,
                 fcf_screen=False, sector_cap=None, name_trend=False,
-                vol_target=None, vol_lookback=21, vol_cap=1.0, rebal_months=None):
+                vol_target=None, vol_lookback=21, vol_cap=1.0, rebal_months=None,
+                fcf_positive=False, debt_ebitda_max=None):
     """Daily NET return series for the tradeable Edge (staggered sleeves when
     stagger=True). Returns aligned daily model / S&P / Nasdaq returns + turnover +
     the primary sleeve's holds. maxDD taken on THIS daily curve = true peak-to-trough.
@@ -1210,7 +1269,8 @@ def _edge_daily(hold, n, mcap_floor, corr_cap, corr_lookback, regime_expo, cost_
         pan, holds, turn = _select_holds_cached(hold, off, n, signal_key, mcap_floor,
                                                 corr_cap, corr_lookback, growth_mix,
                                                 growth_thresh, fcf_screen, sector_cap,
-                                                name_trend, rebal_months)
+                                                name_trend, rebal_months,
+                                                fcf_positive, debt_ebitda_max)
         series.append(_sleeve_daily(pan, holds, turn, M, hold, regime_expo, cost_bps, rd))
         turns.append(float(np.mean(turn)))
         if off == 0:
@@ -1292,14 +1352,17 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
     cr = bool(s.get("continuous_regime", False))
     fs = bool(s.get("fcf_screen", False))
     sc_cap = s.get("sector_cap")
+    fcfp = bool(s.get("fcf_positive", False))
+    dem = s.get("debt_ebitda_max")
     idx, model, spx, ndx, avg_to, prim = _edge_daily(
         hold, s["n"], s["mcap_floor"], s["corr_cap"], s["corr_lookback"],
         s["regime_expo"], s["cost_bps"], sig, gm, gt, stagger, cr, fs, sc_cap, nt,
-        vt, vlb, vcap, rm)
+        vt, vlb, vcap, rm, fcfp, dem)
     # gross (cost-free) daily model, for the gross->net turnover card
     gidx, gmodel, *_ = _edge_daily(hold, s["n"], s["mcap_floor"], s["corr_cap"],
                                    s["corr_lookback"], s["regime_expo"], 0.0, sig, gm, gt,
-                                   stagger, cr, fs, sc_cap, nt, vt, vlb, vcap, rm)
+                                   stagger, cr, fs, sc_cap, nt, vt, vlb, vcap, rm,
+                                   fcfp, dem)
     T = len(model)
     k = window_k(window, T)
     if k < 20:
@@ -1363,6 +1426,8 @@ def run_edge_backtest(window: str = "MAX", spec: dict | None = None) -> dict:
                  "growth_mix": gm, "growth_thresh": gt, "continuous_regime": cr,
                  # surfaced so the page describes what actually runs (rules #7)
                  "sector_cap": sc_cap, "fcf_screen": fs,
+                 # Surfaced so the page can state the screens that actually ran.
+                 "fcf_positive": fcfp, "debt_ebitda_max": dem,
                  "vol_target": vt, "vol_lookback": vlb, "vol_cap": vcap,
                  "delist_haircut": DELIST_HAIRCUT},
         "performance": {"model": stats(mr), "sp500": stats(sr), "nasdaq": stats(nr)},

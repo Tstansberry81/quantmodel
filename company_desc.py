@@ -167,7 +167,12 @@ def _fmt_move(v) -> str:
 
 def _standing(h: dict) -> str:
     """Where this name sits in the field it was chosen from. Pure arithmetic on
-    numbers the tracker already computed (see _current_book)."""
+    numbers the tracker already computed (see _current_book).
+
+    NOTE the field is the POST-SCREEN universe: since 2026-07-30 it counts only
+    names that already cleared the size floor AND both solvency screens. Saying
+    "top 1% of the companies that cleared the model's filters" would be wrong if
+    it were measured before the filters ran."""
     pct, n = h.get("pctile"), h.get("n_eligible")
     if pct is None or not n:
         return ""
@@ -179,7 +184,8 @@ def _standing(h: dict) -> str:
         art = "an" if bn[0] in "8" or bn.startswith("11") or bn.startswith("18") else "a"
         size = f" It carried {art} ${bn}B market cap at the rebalance."
     return (f"Its momentum reading put it in the top {top:g}% of the {int(n):,} "
-            f"companies that cleared the model's size floor this month.{size}")
+            f"companies that cleared the model's size and solvency filters this "
+            f"month.{size}")
 
 
 def _why(h: dict, rank: int, cfg: dict) -> str:
@@ -194,6 +200,26 @@ def _why(h: dict, rank: int, cfg: dict) -> str:
                if isinstance(sig, (int, float)) and sig == sig else
                "its 12-1 momentum reading, the only thing this model ranks on")
     why = f"Ranked {rank} of {cfg.get('n', 10)} in this month's book on {sig_txt}."
+
+    # The solvency screens are part of WHY a name is here -- momentum alone no
+    # longer gets a stock into this book. Stated with the company's own figure
+    # where we have it, so the sentence is checkable rather than boilerplate.
+    gates = []
+    if cfg.get("fcf_positive"):
+        fcfm = h.get("fcf_margin")
+        gates.append(f"generates positive free cash flow"
+                     + (f" (margin {float(fcfm) * 100:.0f}%)"
+                        if isinstance(fcfm, (int, float)) and fcfm == fcfm else ""))
+    dmax = cfg.get("debt_ebitda_max")
+    if dmax:
+        de = h.get("debt_ebitda")
+        gates.append(f"carries debt under {dmax:g}x EBITDA"
+                     + (f" (at {float(de):.1f}x)"
+                        if isinstance(de, (int, float)) and de == de else ""))
+    if gates:
+        why += (" It also passed the model's solvency screens: it "
+                + " and ".join(gates) + ".")
+
     cap = cfg.get("sector_cap")
     sec = h.get("sector")
     if cap and sec:

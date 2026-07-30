@@ -108,6 +108,13 @@ function render(d){
     ['Basket', (s.n||10)+' names'],
     ['Liquidity floor', '≥ $'+fmtN(s.mcap_floor_bn,0)+'B'],
     ['Sector cap', (s.sector_cap ? 'max '+s.sector_cap+' per sector' : 'off')],
+    // Read from the spec the backtest returned, never hardcoded: this row states
+    // which screens ACTUALLY ran, so it cannot describe a model that isn't
+    // running the way the signal label once said "acceleration" for months.
+    ['Solvency screens', [
+        (s.fcf_positive ? 'FCF margin > 0' : null),
+        (s.debt_ebitda_max ? 'debt ≤ '+fmtN(s.debt_ebitda_max,0)+'× EBITDA' : null),
+      ].filter(Boolean).join(' · ') || 'off'],
     ['Regime below 200dMA', fmtN(s.regime_expo*100,0)+'% invested'+(s.continuous_regime?' · judged daily':'')],
     ['Volatility target', (s.vol_target ? fmtN(s.vol_target*100,0)+'% annualized ('+(s.vol_lookback||21)+'d)' : 'off')],
   ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:15px">${v}</div></div>`).join('');

@@ -10,22 +10,34 @@ is the self-contained data layer that replaced its `qmodel` package.
 
 ## The model (product spec, `edge_lib.EDGE_SPEC`)
 
-- **Signal** — *acceleration*: the 3-month return minus the prior 3-month
-  return, z-scored cross-sectionally at each rebalance.
-- **Universe** — top ~1000 US names by point-in-time market cap, $2B floor.
-  `pit_universe.py` swaps in real PIT membership (Norgate or a CSV) when present.
-- **Selection** — greedy best-first under a 0.50 correlation cap (126-day
-  lookback); 75% of the basket drawn from the ≥15% YoY revenue-growth pool
-  (`growth_mix`); top **10** equal-weight.
-- **Clock** — every 42 trading days (~2 months), run as **two staggered sleeves**
-  offset by half a period, so results don't hinge on rebalance-date luck.
+Full lineage, with what each change cost and what was rejected alongside it, is
+in **[MODEL_VERSIONS.md](MODEL_VERSIONS.md)**. Current shipped version: **v5**.
+
+- **Signal** — *12-1 momentum* (Jegadeesh–Titman): the trailing 12-month return
+  **skipping the most recent month**, z-scored cross-sectionally at each
+  rebalance. Acceleration was retired 2026-07-27 after being falsified on
+  survivorship-free data.
+- **Universe** — top ~1000 US names by point-in-time market cap, **$10B floor**.
+  The floor is load-bearing: momentum degrades monotonically as it drops.
+- **Solvency screens** — trailing **FCF margin > 0** and **debt/EBITDA ≤ 4**.
+  The only fundamental screens that improved return *and* risk; valuation caps
+  (P/E) cost Sharpe and quality screens did nothing for drawdown.
+- **Selection** — top **10** equal-weight, at most **2 names per sector**.
+  The correlation cap is OFF (it pushed the book away from the signal).
+- **Clock** — the **first trading day of every month**. Each book is held until
+  the next replaces it, so windows tile the calendar exactly rather than running
+  a fixed day-count. Set `rebal_months=2` for the 2-month clock.
 - **Regime** — the 200-day-MA de-risk is evaluated **daily** across the hold
-  window (`continuous_regime`), cutting to 25% invested rather than riding a
-  fast intra-window crash through to the next rebalance.
-- **Execution lag** — the signal is formed on close *t*, the trade enters at
-  close *t+1*. You cannot compute the whole cross-section and trade the close it
-  came from.
-- **Costs** — 10 bps × turnover, deducted per rebalance.
+  window (`continuous_regime`), cutting to 25% invested.
+- **Volatility target** — exposure scaled toward **25% annualized** on the
+  book's own trailing 21-day volatility, causal (`.shift(1)`), de-lever only.
+- **Execution lag** — signal formed on close *t*, trade enters at close *t+1*.
+  You cannot compute the whole cross-section and trade the close it came from.
+- **Costs** — 10 bps × turnover, including the turnover of re-levering.
+
+Backtest, MAX window, net of costs: **17.11%/yr, −28.6% max drawdown**, against
+the S&P's 8.71% and −55.25%. That is a backtest — the forward record on the Edge
+Tracker page is the only out-of-sample evidence.
 
 ## Setup (macOS)
 

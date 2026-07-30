@@ -32,6 +32,7 @@
     <div class="stat"><div class="k">Basket</div><div class="v" style="font-size:15px">10 names · equal-wt</div></div>
     <div class="stat"><div class="k">Execution</div><div class="v" style="font-size:15px">enter next day (t+1)</div></div>
     <div class="stat"><div class="k">Liquidity floor</div><div class="v" style="font-size:15px">≥ $10B mcap</div></div>
+    <div class="stat"><div class="k">Solvency screens</div><div class="v" style="font-size:15px">FCF margin &gt; 0 · debt ≤ 4× EBITDA</div></div>
     <div class="stat"><div class="k">Sector cap</div><div class="v" style="font-size:15px">max 2 per sector</div></div>
     <div class="stat"><div class="k">Regime (below 200dMA)</div><div class="v" style="font-size:15px">25% invested · judged daily</div></div>
     <div class="stat"><div class="k">Volatility target</div><div class="v" style="font-size:15px">25% annualized</div></div>
@@ -44,6 +45,14 @@
   <p class="lead">At each rebalance date \(d\), keep US names whose point-in-time market cap clears the
   size floor. Delisted companies remain in the history and can be held into their delisting.</p>
   <div class="eqbox">$$\operatorname{mcap}_i(d)\ \ge\ \$10\text{B}$$</div>
+  <p class="lead">Since 30 July 2026 two <b>solvency</b> screens run alongside the size floor. Both read
+  fundamentals already lagged 90 days, so nothing is used before it was public.</p>
+  <div class="eqbox">$$\text{FCF margin}_i(d)\ >\ 0
+  \qquad\text{and}\qquad
+  \frac{\text{debt}_i(d)}{\text{EBITDA}_i(d)}\ \le\ 4$$</div>
+  <p class="lead">A missing leverage ratio is <em>kept</em>, not dropped — it usually means a company with
+  no meaningful debt, and excluding those would screen out the safest names. Free-cash-flow margin is
+  populated for every name in every year, so a blank there is treated as a genuine failure.</p>
 </div>
 
 <div class="panel eqsec">
@@ -120,6 +129,10 @@
     <li><b>Start with big companies only.</b> Each must be worth at least $10 billion. Smaller companies
       were tested and the strategy got steadily worse the further down it went, so the size floor is part
       of the model rather than a convenience.</li>
+    <li><b>Throw out the ones that cannot pay their own way.</b> A company must generate positive free
+      cash flow and carry less than four years of earnings in debt. This is the newest rule and it is
+      the single biggest improvement to the model's worst loss: it does not try to judge whether a
+      stock is cheap, only whether the business can survive a bad year without needing to raise money.</li>
     <li><b>Measure each one's past year of returns, ignoring the most recent month.</b></li>
     <li><b>Rank them against each other</b> on that date. What matters is beating the other candidates
       that day, not clearing a fixed number.</li>
@@ -147,6 +160,9 @@
     <li><b>12-1 momentum</b> — the ranking rule: last 12 months' return, skipping the last month.</li>
     <li><b>10 names, equal weight</b> — 10% of the money in each position.</li>
     <li><b>Sector cap 2</b> — at most 2 of the 10 from any one industry.</li>
+    <li><b>Solvency screens</b> — positive free cash flow, debt under 4× EBITDA. Cut the worst drawdown
+      from −46% to −29% while costing about a third of a point of annual return. Notably, screens based
+      on <em>valuation</em> (buying only cheaper stocks) were tested and made the model worse.</li>
     <li><b>Monthly clock</b> — it re-picks on the <em>first trading day of every month</em>, and each
       book is held until the next one replaces it. The date is a product choice: a book has to arrive on
       a day subscribers can plan around. It is not the highest-scoring clock — the 2-month version

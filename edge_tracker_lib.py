@@ -44,6 +44,8 @@ CONTINUOUS_REGIME = _S["continuous_regime"]  # judge the 200dMA daily, not at re
 VOL_TARGET = _S["vol_target"]       # scale exposure toward 25% annualized vol
 VOL_LOOKBACK = _S["vol_lookback"]
 COST_BPS = _S["cost_bps"]
+FCF_POSITIVE = _S["fcf_positive"]        # solvency screens (2026-07-30)
+DEBT_EBITDA_MAX = _S["debt_ebitda_max"]
 SIGNAL = dict(_S["signal"])
 _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 
@@ -64,14 +66,17 @@ _SIGNAL_LABEL = "12-1 momentum (12-month return, skipping the last month)"
 MODEL_STATUS = {
     "state": "live",
     "since": "2026-07-30",
-    "headline": ("12-1 momentum, large caps, regime-gated, volatility-targeted, "
-                 "rebalanced the first trading day of every month."),
+    "headline": ("12-1 momentum on solvent large caps, regime-gated, "
+                 "volatility-targeted, rebalanced the first trading day of every month."),
     "detail": ("Acceleration was retired on 2026-07-27 after it was falsified on "
                "survivorship-free data. The replacement ranks large caps by 12-1 "
                "momentum, caps each sector at 2 names, judges the 200-day-MA "
                "regime daily, and scales exposure toward 25% annualized "
-               "volatility. Backtest, net of 10bps, 1999-2026: 17.5%/yr vs the "
-               "S&P's 8.7%, Sharpe 0.90 vs 0.53, max drawdown -45.7% vs -55.3%. "
+               "volatility. Since 2026-07-30 it also requires positive free cash "
+               "flow and debt under 4x EBITDA — the only fundamental screens that "
+               "improved return and risk together, and worth more than de-levering "
+               "would have been. Backtest, net of 10bps, 1999-2026: 17.1%/yr vs "
+               "the S&P's 8.7%, max drawdown -28.6% vs -55.3%. "
                "CORRECTION (2026-07-30): this page previously showed 18.3%/yr, "
                "Sharpe 0.93 and a -30.8% drawdown. Those came from a rebalance "
                "grid that started on an arbitrary date, and sweeping that start "
@@ -288,6 +293,19 @@ def _latest_price(data, ck):
         return None
 
 
+def _num(series, ck):
+    """One float off a company-key-indexed Series, or None. NaN never reaches the
+    payload: JSON has no NaN, and json.dumps emits a bare `NaN` token that every
+    strict parser rejects -- including the one Vision's static page uses."""
+    if series is None or ck not in series.index:
+        return None
+    try:
+        v = float(series.get(ck))
+    except (TypeError, ValueError):
+        return None
+    return v if v == v else None
+
+
 def _current_book(pan, data, n, mix):
     """The STILL-OPEN position: the most recent scheduled rebalance's full-spec
     picks = what a live trader following the Edge is holding right now.
@@ -302,7 +320,12 @@ def _current_book(pan, data, n, mix):
     live = pan.live_panel is not None and len(pan.live_panel) > 0
     df = pan.live_panel if live else pan.panels[pan.T - 1]
     bdate = pan.live_date if live else pan.bdates[pan.T - 1]
-    floored = df[df["pit_mcap"] >= MCAP_FLOOR] if MCAP_FLOOR else df
+    # E._candidates, not a hand-rolled market-cap filter. This line used to be
+    # `df[df["pit_mcap"] >= MCAP_FLOOR]`, which silently skipped every screen the
+    # backtest applies -- exactly how the live book once ran without the sector
+    # cap while the page advertised one. Going through the shared helper means a
+    # screen added to the model reaches the published book automatically.
+    floored = E._candidates(df, MCAP_FLOOR, False, FCF_POSITIVE, DEBT_EBITDA_MAX)
     cks = E._blend_select(floored, bdate, n, SIGNAL, CORR_CAP,
                           CORR_LOOKBACK, mix, GROWTH_THRESH, require_fwd=not live,
                           sector_cap=SECTOR_CAP)
@@ -328,6 +351,11 @@ def _current_book(pan, data, n, mix):
     # published sentence rather than erroring.
     sig_all = floored[sig_col] if sig_col in floored.columns else None
     mcap_all = idx["pit_mcap"] if "pit_mcap" in idx.columns else None
+    # The solvency figures the published write-up quotes. Carried through here
+    # so Vision states the company's OWN numbers rather than just asserting it
+    # passed a screen -- a claim the reader can check beats one they can't.
+    fcf_all = idx["fcf_margin"] if "fcf_margin" in idx.columns else None
+    de_all = idx["debt_ebitda"] if "debt_ebitda" in idx.columns else None
     book = []
     for ck in cks:
         tk, nm, sec = _meta(data, ck)
@@ -350,6 +378,8 @@ def _current_book(pan, data, n, mix):
             "pctile": pct,                  # rank within the eligible universe
             "n_eligible": n_elig,           # how big that universe was
             "mcap": mc,                     # point-in-time market cap
+            "fcf_margin": _num(fcf_all, ck),
+            "debt_ebitda": _num(de_all, ck),
         })
     # highest-conviction first, by the signal actually used
     book.sort(key=lambda r: (r["signal"] if r["signal"] == r["signal"] else -1e9),
@@ -375,7 +405,8 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
         hold, n, MCAP_FLOOR, CORR_CAP, CORR_LOOKBACK, REGIME_EXPO, COST_BPS,
         tuple(sorted(SIGNAL.items())), mix, GROWTH_THRESH,
         sector_cap=SECTOR_CAP,
-        rebal_months=E.clock_spec(hold)["rebal_months"])
+        rebal_months=E.clock_spec(hold)["rebal_months"],
+        fcf_positive=FCF_POSITIVE, debt_ebitda_max=DEBT_EBITDA_MAX)
     T = len(net)
     log = []
 
@@ -723,6 +754,8 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
                 "cost_bps": COST_BPS, "signal": _SIGNAL_LABEL,
                 "sector_cap": SECTOR_CAP,
+                "fcf_positive": FCF_POSITIVE,
+                "debt_ebitda_max": DEBT_EBITDA_MAX,
                 # The two EXPOSURE overlays are reported so the page can say they
                 # exist, but `overlays_in_returns` is False on purpose: this
                 # module's book and paper log come from E._edge_full, which is a
