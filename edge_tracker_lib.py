@@ -97,8 +97,18 @@ GROWTH_THRESH = _S["growth_thresh"]  # YoY revenue-growth bar defining a "growth
 # record that restarts without saying so is WORSE than no record: the page keeps
 # presenting it as forward evidence. Point EDGE_TRACKER_PATH at a persistent
 # volume in that case (render.yaml mounts one at /var/data).
+# The default is anchored to THIS FILE, not the working directory. It used to be
+# the relative "data/cache/edge_tracker.json", which means the record you get
+# depends on where you happened to launch from: start the app from any other
+# directory and it silently creates an empty record and the page presents that
+# as the forward evidence. Caught exactly that way -- a dev server launched from
+# a parent directory reported 1 snapshot while 4 sat on disk. Production sets
+# EDGE_TRACKER_PATH to an absolute path on the mounted disk, so this only ever
+# bit local runs, which is precisely where it is hardest to notice.
 SNAPSHOT_PATH = os.environ.get(
-    "EDGE_TRACKER_PATH", os.path.join("data", "cache", "edge_tracker.json"))
+    "EDGE_TRACKER_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "data", "cache", "edge_tracker.json"))
 
 # --- GP/assets quality-gate research sleeve (2026-07 fundamental campaign) -----
 # Paper-tracked forward ALONGSIDE the product + n=7 books. Overlay = the accel
