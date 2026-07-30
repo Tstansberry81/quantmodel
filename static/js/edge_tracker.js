@@ -56,7 +56,17 @@ function render(d){
   // as the forward record in the largest type on the page. Forward and
   // simulated are now separate cards, each labelled for what it is.
   const fst = d.forward_stats || {};
+  const lv = d.live || {};
+  // Live mark leads the cards when it exists: between rebalances it is the only
+  // thing on this page that moves, and it is the honest answer to "how is the
+  // book doing right now".
+  const liveCards = lv.days ? [
+    ['Live vs S&P', (lv.excess>=0?'+':'')+fmtPct(lv.excess), cls(lv.excess)],
+    ['Book since day 1', (lv.edge_ret>=0?'+':'')+fmtPct(lv.edge_ret), cls(lv.edge_ret)],
+    ['S&P since day 1', (lv.sp_ret>=0?'+':'')+fmtPct(lv.sp_ret), cls(lv.sp_ret)],
+  ] : [];
   document.getElementById('headline').innerHTML = [
+    ...liveCards,
     ['Current book', (d.current_book||[]).length+' names', ''],
     ['Book date', d.book_date||'—', ''],
     ['Forward record', `${fmtN(fst.n_closed,0)} closed · ${fmtN(fst.n_open,0)} open`, ''],
@@ -99,15 +109,17 @@ function render(d){
       // STRANDED = written down under a rebalance clock the model no longer runs,
       // so no closing date exists for it. Shown as its own state rather than as a
       // perpetual OPEN, which would read as a live position that never resolves.
-      const badge = t.status==='STRANDED'
+      const badge = t.status==='SUPERSEDED'
+        ? `<span class="small" title="${t.stranded_reason||''}">↺ superseded</span>`
+        : t.status==='STRANDED'
         ? `<span class="small" title="${t.stranded_reason||''}">&#8856; stranded</span>`
         : (open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>');
       return `<tr><td>${t.book_date}</td>
         <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}</td>
         <td>${badge}</td>
-        <td class="${cls(t.edge_ret)}">${t.edge_ret==null?'—':sgnPct(t.edge_ret)}</td>
-        <td class="${cls(t.sp_ret)}">${t.sp_ret==null?'—':sgnPct(t.sp_ret)}</td>
-        <td class="${cls(t.excess)}">${t.excess==null?'—':sgnPct(t.excess)}</td>
+        <td class="${cls(t.edge_ret ?? (open?lv.edge_ret:null))}">${t.edge_ret!=null?sgnPct(t.edge_ret):(open&&lv.days?sgnPct(lv.edge_ret)+'<span class="small"> live</span>':'—')}</td>
+        <td class="${cls(t.sp_ret ?? (open?lv.sp_ret:null))}">${t.sp_ret!=null?sgnPct(t.sp_ret):(open&&lv.days?sgnPct(lv.sp_ret):'—')}</td>
+        <td class="${cls(t.excess ?? (open?lv.excess:null))}">${t.excess!=null?sgnPct(t.excess):(open&&lv.days?sgnPct(lv.excess):'—')}</td>
         <td class="small">${(t.tickers||[]).join(' ')}</td></tr>`;
     }).join('')
       : `<tr><td colspan="7" class="small">No forward rebalances recorded yet — the
@@ -116,8 +128,13 @@ function render(d){
   }
   const fwdMeta = document.getElementById('fwdmeta');
   if (fwdMeta) {
-    const stranded = fs.n_stranded ? ` · ${fs.n_stranded} stranded by a clock change` : '';
-    fwdMeta.textContent = (fs.n_closed
+    const stranded = (fs.n_stranded ? ` · ${fs.n_stranded} stranded by a clock change` : '')
+      + (fs.n_superseded ? ` · ${fs.n_superseded} superseded by a rules change` : '');
+    const liveTxt = lv.days
+      ? `Open book marked to ${lv.as_of} (day ${lv.days}, ${lv.n_priced}/${lv.n_book} priced) — `
+        + `${lv.basis}. `
+      : '';
+    fwdMeta.textContent = liveTxt + (fs.n_closed
       ? `${fs.n_closed} closed · ${fmtPct(fs.hit_rate)} beat the S&P · `
         +`${sgnPct(fs.avg_excess)} average excess · ${fs.n_open} open`
       : `${fs.n_open||0} open, 0 closed. Nothing here is evidence yet — the first `

@@ -111,6 +111,11 @@ first is out-of-sample evidence.</p>
     &ldquo;logged&rdquo; column is the wall-clock time this system first recorded that basket &mdash;
     that timestamp, not the book date, is what makes a row genuine evidence. The record restarts
     whenever the model's parameters change, so it is deliberately short.</p>
+    <p class="small">A row marked <b>&#8634; superseded</b> was replaced by a later book for the same
+    date after a change to the selection rules &mdash; the 2026-07-01 book was first written down under
+    the pre-solvency-screen model, then re-picked once those screens shipped. The original stays visible
+    because it is a genuine record of what was written down at the time; it is simply no longer what the
+    model holds.</p>
     <p class="small">A row marked <b>&#8856; stranded</b> was written down under a rebalance clock this
     model no longer runs, so no closing date exists for it and it can never be scored. Moving to
     monthly month-start rebalancing on 30 July 2026 stranded the books dated mid-month. They stay

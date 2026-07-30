@@ -20,6 +20,7 @@ import pandas as pd
 
 import edge_lib as E
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
+import live_tracker          # daily mark-to-market of the open book vs the S&P
 
 # Full-spec book parameters. READ from EDGE_SPEC, not retyped beside it.
 #
@@ -110,6 +111,29 @@ GROWTH_THRESH = _S["growth_thresh"]  # YoY revenue-growth bar defining a "growth
 # a parent directory reported 1 snapshot while 4 sat on disk. Production sets
 # EDGE_TRACKER_PATH to an absolute path on the mounted disk, so this only ever
 # bit local runs, which is precisely where it is hardest to notice.
+def _spec_sig() -> str:
+    """Short hash of the parameters that decide WHICH NAMES are picked.
+
+    A book recorded under v4 and a book recorded under v5 for the same rebalance
+    date are different portfolios, not one record. Keying snapshots on
+    (config, book_date) alone meant the first one written won forever: the
+    2026-07-01 entry captured the pre-solvency-screen book and no later entry
+    could ever be added for that date, so the forward record permanently showed
+    a basket the model had stopped producing.
+
+    Only selection inputs are included. Overlays (vol target, regime) change the
+    exposure, not the holdings, so they must NOT reset a record of what was held.
+    """
+    import hashlib
+    parts = (tuple(sorted(SIGNAL.items())), MCAP_FLOOR, SECTOR_CAP, CORR_CAP,
+             FCF_POSITIVE, DEBT_EBITDA_MAX, HOLD, REBAL_MONTHS, GROWTH_MIX,
+             GROWTH_THRESH)
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:8]
+
+
+SPEC_SIG = None   # computed lazily below, after the constants exist
+
+
 SNAPSHOT_PATH = os.environ.get(
     "EDGE_TRACKER_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -536,6 +560,16 @@ def _forward_log(snaps, full_log, cfg, book_date):
         # row carries status OPEN in that case.
         is_open = match is None or match.get("status") != "CLOSED"
         stranded = match is None and known and bd is not None and bd < max(known)
+        # SUPERSEDED: a newer entry exists for the same book date under a
+        # different selection spec. The old row is kept -- it is a genuine record
+        # of what was written down at the time -- but it is no longer the book,
+        # and showing it as live would misrepresent what the model holds.
+        sig = s.get("spec_sig")
+        superseded = any(
+            x is not s and _snap_config(x) == cfg and x.get("book_date") == bd
+            and x.get("spec_sig") != sig
+            and (x.get("logged_at") or "") > (s.get("logged_at") or "")
+            for x in snaps)
         closed = match or {}
         out.append({
             "book_date": bd,
@@ -544,9 +578,15 @@ def _forward_log(snaps, full_log, cfg, book_date):
             "tickers": s.get("tickers", []),
             "n": s.get("n"),
             "clock": s.get("clock"),
-            "status": "STRANDED" if stranded else ("OPEN" if is_open else "CLOSED"),
-            "stranded_reason": ("recorded on a rebalance clock this model no longer "
-                                "runs, so no closing date exists for it") if stranded else None,
+            "status": ("SUPERSEDED" if superseded else
+                       "STRANDED" if stranded else ("OPEN" if is_open else "CLOSED")),
+            "spec_sig": sig,
+            "stranded_reason": (
+                "replaced by a later book for the same date after a change to the "
+                "selection rules — kept as a record of what was written down, but "
+                "it is not what the model holds" if superseded else
+                "recorded on a rebalance clock this model no longer runs, so no "
+                "closing date exists for it" if stranded else None),
             "edge_ret": None if is_open else closed.get("edge_ret"),
             "sp_ret": None if is_open else closed.get("sp_ret"),
             "excess": None if is_open else closed.get("excess"),
@@ -566,8 +606,10 @@ def _forward_stats(flog):
     # the number anyway: rows that silently vanish from every total are how a
     # record ends up looking shorter than it is with no explanation on the page.
     n_stranded = sum(1 for e in flog if e["status"] == "STRANDED")
+    n_superseded = sum(1 for e in flog if e["status"] == "SUPERSEDED")
     if not closed:
         return {"n_closed": 0, "n_open": n_open, "n_stranded": n_stranded,
+                "n_superseded": n_superseded,
                 "hit_rate": None,
                 "avg_excess": None, "avg_edge_ret": None, "avg_sp_ret": None,
                 "first_logged": (flog[0].get("logged_at") if flog else None)}
@@ -576,6 +618,7 @@ def _forward_stats(flog):
         "n_closed": len(closed),
         "n_open": n_open,
         "n_stranded": n_stranded,
+        "n_superseded": n_superseded,
         "hit_rate": sum(1 for v in ex if v > 0) / len(ex),
         "avg_excess": sum(ex) / len(ex),
         "avg_edge_ret": sum(e["edge_ret"] for e in closed) / len(closed),
@@ -598,7 +641,14 @@ def _persist_snapshots(pan, data, mix):
                                  else pan.bdates[pan.T - 1]).date())
     changed = False
     for cfg, nn in (("product", N), (f"paper-n{PAPER_N}", PAPER_N)):
-        if any(_snap_config(s) == cfg and s.get("book_date") == book_date for s in snaps):
+        sig = _spec_sig()
+        # NO DEFAULT on spec_sig. `s.get("spec_sig", sig)` reads as "unknown means
+        # unchanged", which is backwards: a legacy entry written before this field
+        # existed compared EQUAL to the current spec, so the guard skipped writing
+        # the new book and the page kept showing the pre-solvency-screen basket --
+        # exactly the bug the field was added to fix. Absent means different.
+        if any(_snap_config(s) == cfg and s.get("book_date") == book_date
+               and s.get("spec_sig") == sig for s in snaps):
             continue
         book, _bd, _cks, _live = _current_book(pan, data, nn, mix)
         snaps.append({
@@ -611,6 +661,11 @@ def _persist_snapshots(pan, data, mix):
             # to tell why -- which is exactly what the 2026-07-30 move to a
             # calendar grid did to the books dated on the old 42-day stride.
             "clock": {"hold": HOLD, "rebal_months": REBAL_MONTHS},
+            # Which SELECTION spec produced this basket. Without it, one record
+            # per (config, date) meant a spec change could never be recorded for
+            # a date already logged -- the page kept showing a book the model no
+            # longer picks.
+            "spec_sig": _spec_sig(),
             "tickers": [r["ticker"] for r in book],
             "upgrades": UPGRADES.get(cfg, []),
         })
@@ -714,6 +769,21 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         forward_log = _forward_log(snaps, full_log, viewed_cfg, book_date)
         forward_stats = _forward_stats(forward_log)
 
+        # DAILY MARK of the open book against the S&P. The forward log only
+        # resolves at a rebalance, so between them it showed "—" for a month.
+        # Only the PRODUCT book at the shipped clock is tracked: an exploratory
+        # selector combination is not a portfolio anyone holds, and marking one
+        # would start a run that resets the moment the viewer clicks away.
+        live = {}
+        if hold == HOLD and n == N and mix == GROWTH_MIX:
+            try:
+                live = live_tracker.summary(
+                    live_tracker.state(current_book, spec_version="v5"))
+            except Exception as e:                          # noqa: BLE001
+                # A price-feed problem must never take the tracker page down.
+                print(f"  live tracker unavailable: {type(e).__name__}: {e}")
+                live = {}
+
         stats = {
             "n_snapshots": len(vsnaps),
             "record": viewed_cfg,
@@ -740,6 +810,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             # accidentally present one as the other.
             "log": log,
             "forward_log": forward_log,
+            "live": live,
             "forward_stats": forward_stats,
             "stats": stats,
             "spec": {

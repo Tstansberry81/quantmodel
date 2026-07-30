@@ -60,6 +60,12 @@ services:
       # never a wrong number.
       - key: EDGE_DESC_PATH
         value: /var/data/company_desc.json
+      # Live mark-to-market state: inception date, the book, and the ENTRY
+      # PRICES. Those prices are the record — yfinance will serve today's price
+      # forever but never what we paid, so losing this file makes the
+      # since-inception return unrecoverable and silently restarts day 1.
+      - key: EDGE_LIVE_PATH
+        value: /var/data/edge_live.json
       # Pin the universe rule. edge_lib defaults USE_PIT_UNIVERSE to whatever
       # pit_universe auto-detects, and now that the artifact reports
       # source=sharadar the SharadarAdapter activates -- so production would
