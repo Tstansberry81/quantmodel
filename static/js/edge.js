@@ -46,7 +46,8 @@ function render(d){
   const p=d.performance||{}, m=p.model||{}, t=d.turnover||{};
   const alpha=(m.cagr??0)-((p.sp500||{}).cagr??0);
   // Lead with the risk-adjusted SHAPE (the trustworthy part); CAGR/total return
-  // Survivorship has been measured (~0.2pts) rather than flagged as unknown.
+  // Survivorship is measured, not flagged as unknown: the delisting treatment is
+  // worth ~0.2pts and runs in the model's FAVOUR on v5 (see the caveat block).
   document.getElementById('headline').innerHTML = [
     ['Sharpe', fmtN(m.sharpe,2), '', 'Return per unit of total risk — higher is better (>1 is strong). Note: √252·mean/σ, with NO risk-free subtraction, applied identically to the benchmarks.'],
     ['Max drawdown', fmtPct(m.max_drawdown), 'neg', 'Worst peak-to-trough loss, measured on the daily curve. Shallower than the S&P over the same history, but this is a concentrated 10-stock momentum book and the gap is not large — read it alongside the caveats.'],
@@ -131,8 +132,12 @@ function render(d){
     +'<b>Survivorship is no longer the headline risk here — it has been measured.</b> The price history is '
     +'survivorship-free: 7,851 delisted companies, 65% of the dataset, spread evenly across every year since 1999, '
     +'534 of which once cleared the $10B floor. The model visibly eats their losses (its worst single positions '
-    +'are −71%, −57%, −49%, and three of the ten worst later delisted). Residual survivorship exposure is about '
-    +'<b>0.2 percentage points of CAGR</b>, versus the ~8 points that inflated the previous version of this model. '
+    +'are −71%, −57%, −49%, and three of the ten worst later delisted). Re-measured on the current model, the '
+    +'delisting treatment is worth about <b>0.2 percentage points of CAGR — in the model\'s favour, not against it</b>: '
+    +'holding a dying name to its last trade returns 17.1% versus 16.9% for the look-ahead version that drops it, '
+    +'because the affected names (0.6% of positions) are overwhelmingly acquisitions and the solvency screens remove '
+    +'the distressed companies that would die badly. So there is no residual inflation left from this source — '
+    +'compare the ~8 points that inflated the previous version of this model. '
     +'What remains, honestly: '
     +'<b>(1) It is still a backtest.</b> These rules were chosen knowing how this history turned out. That is the '
     +'largest risk on this page and no amount of clean data fixes it — only the '

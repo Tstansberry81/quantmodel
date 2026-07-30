@@ -51,6 +51,32 @@ and 0.05 Sharpe, and removed 47% of the universe.
 
 **Not yet confirmed out of sample.** Only the forward record can do that.
 
+### Re-measured on v5 — survivorship exposure CHANGED SIGN (2026-07-30)
+
+| | CAGR | Sharpe | maxDD |
+|---|---|---|---|
+| shipped (dying names held to last trade) | 17.11% | 0.910 | −28.58% |
+| look-ahead (dying names excluded) | 16.92% | 0.900 | −28.95% |
+
+**−0.19 pts.** Excluding dying names makes the model WORSE, so there is no
+residual survivorship inflation left — the delisting treatment runs in the
+model's favour.
+
+On v3 the sign was the other way (the look-ahead variant was 0.18pts *higher*).
+The solvency screens flipped it: `fcf_positive` and `debt_ebitda_max` remove the
+distressed companies that die badly, so the names that still delist are
+overwhelmingly acquisitions, and holding those to their last trade captures the
+deal premium. Affected positions: 20 of 3,300 (0.6%).
+
+The site previously said "residual survivorship exposure is about 0.2 percentage
+points of CAGR", which reads as 0.2pts of inflation — correct for v3, backwards
+for v5. Corrected in `static/js/edge.js`.
+
+**KNOWN STALE, deliberately not yet changed:** the `DELIST_HAIRCUT` comment in
+`edge_lib.py` still quotes the v3 figures (18.47% → 18.29%). Editing that file
+changes the panel fingerprint and invalidates the shipped bundle, so it is
+batched for the next rebuild+republish rather than triggering one for a comment.
+
 ### Tested after v5 and REJECTED — revenue-growth gates (2026-07-30)
 
 `rev_growth` is 96% populated and stored as a fraction (median +7.9% YoY).
