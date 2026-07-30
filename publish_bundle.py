@@ -52,9 +52,50 @@ def _token() -> str:
     sys.exit("publish_bundle: no credential found (set GITHUB_TOKEN or run `git credential fill`).")
 
 
+def _check_panel_matches_code() -> None:
+    """Refuse to publish a bundle whose panel the deployed code will reject.
+
+    The panel fingerprint hashes edge_lib.py. Change one comment in that file
+    after building the bundle and the shipped panel is dead on arrival: every
+    cold start rebuilds it, which takes minutes, and on a small instance those
+    rebuilds are exactly what makes the site look hung.
+
+    Lived through on 2026-07-30 -- the bundle was published and edge_lib.py was
+    edited eleven minutes later, so the republish bought nothing and every
+    request timed out behind a rebuild. The failure is silent by construction
+    (a stale panel is a cache miss, not an error), which is why this is a
+    pre-flight check rather than something to notice afterwards.
+    """
+    import zipfile
+    import edge_lib as E
+    want_hold = E.EDGE_SPEC["hold"]
+    want = E._panel_cache_paths(**{**E.clock_spec(want_hold),
+                                   "universe": E.UNIVERSE, "offset_days": 0})[1].name
+    with zipfile.ZipFile(BUNDLE) as z:
+        names = [n.rsplit("/", 1)[-1] for n in z.namelist()]
+    if want not in names:
+        shipped = [n for n in names if n.startswith("panel_")] or ["(none)"]
+        sys.exit(f"publish_bundle: REFUSING — the bundle carries {shipped} but the\n"
+                 f"  current code asks for {want}. Rebuild with make_data_bundle.py.")
+
+    # Same file, same bytes: the fingerprint hashes edge_lib.py itself, so an
+    # uncommitted edit means the panel matches your working tree and not what
+    # will be deployed.
+    dirty = subprocess.run(["git", "status", "--porcelain", "edge_lib.py"],
+                           capture_output=True, text=True,
+                           cwd=BUNDLE.parent).stdout.strip()
+    if dirty:
+        sys.exit("publish_bundle: REFUSING — edge_lib.py has uncommitted changes.\n"
+                 "  The bundled panel is fingerprinted against your working tree; the\n"
+                 "  host will run the committed file and reject it. Commit, rebuild,\n"
+                 "  then publish.")
+    print(f"  pre-flight OK — bundle carries {want} and edge_lib.py is committed")
+
+
 def main() -> None:
     if not BUNDLE.exists():
         sys.exit(f"publish_bundle: {BUNDLE} not found — run make_data_bundle.py first.")
+    _check_panel_matches_code()
     tok = _token()
     h = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
     base = f"https://api.github.com/repos/{REPO}"
