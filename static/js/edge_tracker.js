@@ -11,7 +11,9 @@ const fmtMom = v => v==null||isNaN(v) ? "—"
 
 const fmtPct = v => v==null||isNaN(v) ? "—" : (v*100).toFixed(1)+"%";
 const fmtN = (v,d=2) => v==null||isNaN(v) ? "—" : Number(v).toFixed(d);
-const cls = v => v==null||isNaN(v) ? "" : (v>=0?"pos":"neg");
+// Exact zero is neither. Day 1 of a live mark is 0.00% by construction, and
+// painting it green read as "up".
+const cls = v => v==null||isNaN(v) ? "" : (v>0?"pos":(v<0?"neg":""));
 const sgnPct = v => v==null||isNaN(v) ? "—" : (v>=0?"+":"")+(v*100).toFixed(1)+"%";
 
 const _O = loadEdgeOpts();   // shared with the Edge backtest page (localStorage)
@@ -109,15 +111,26 @@ function render(d){
       // STRANDED = written down under a rebalance clock the model no longer runs,
       // so no closing date exists for it. Shown as its own state rather than as a
       // perpetual OPEN, which would read as a live position that never resolves.
+      // BACKFILLED = written down after the date it is dated, so its holding
+      // window was already running. Never scored, for the same reason stranded
+      // rows are not: a return over a window that already happened is a backtest.
       const badge = t.status==='SUPERSEDED'
         ? `<span class="small" title="${t.stranded_reason||''}">↺ superseded</span>`
         : t.status==='STRANDED'
         ? `<span class="small" title="${t.stranded_reason||''}">&#8856; stranded</span>`
+        : t.status==='BACKFILLED'
+        ? `<span class="small" title="${t.stranded_reason||''}">&#9203; backfilled</span>`
         : (open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>');
+      // Surface the gap between "dated" and "written down" on every row. It is
+      // the one number that says whether a row is evidence, so it belongs in the
+      // table rather than in a caveat underneath it.
+      const lag = t.logged_lag_days;
+      const lagTxt = (lag!=null && lag>0)
+        ? `<span class="small" style="color:#8b949e"> · ${lag}d after</span>` : '';
       return `<tr><td>${t.book_date}</td>
-        <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}</td>
+        <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}${lagTxt}</td>
         <td>${badge}</td>
-        <td class="${cls(t.edge_ret ?? (open?lv.edge_ret:null))}">${t.edge_ret!=null?sgnPct(t.edge_ret):(open&&lv.days?sgnPct(lv.edge_ret)+'<span class="small"> live</span>':'—')}</td>
+        <td class="${cls(t.edge_ret ?? (open?lv.edge_ret:null))}">${t.edge_ret!=null?sgnPct(t.edge_ret):(open&&lv.days?sgnPct(lv.edge_ret)+`<span class="small"> live${lv.inception&&lv.inception!==t.book_date?' · from '+lv.inception:''}</span>`:'—')}</td>
         <td class="${cls(t.sp_ret ?? (open?lv.sp_ret:null))}">${t.sp_ret!=null?sgnPct(t.sp_ret):(open&&lv.days?sgnPct(lv.sp_ret):'—')}</td>
         <td class="${cls(t.excess ?? (open?lv.excess:null))}">${t.excess!=null?sgnPct(t.excess):(open&&lv.days?sgnPct(lv.excess):'—')}</td>
         <td class="small">${(t.tickers||[]).join(' ')}</td></tr>`;
@@ -129,16 +142,21 @@ function render(d){
   const fwdMeta = document.getElementById('fwdmeta');
   if (fwdMeta) {
     const stranded = (fs.n_stranded ? ` · ${fs.n_stranded} stranded by a clock change` : '')
-      + (fs.n_superseded ? ` · ${fs.n_superseded} superseded by a rules change` : '');
+      + (fs.n_superseded ? ` · ${fs.n_superseded} superseded by a rules change` : '')
+      + (fs.n_backfilled ? ` · ${fs.n_backfilled} backfilled (dated earlier than written down, so never scored)` : '');
+    // The live mark, not the log, is what is accruing evidence right now. Say so
+    // explicitly while every logged row is still unscoreable — otherwise "0 open,
+    // 0 closed" reads as nothing running at all.
     const liveTxt = lv.days
-      ? `Open book marked to ${lv.as_of} (day ${lv.days}, ${lv.n_priced}/${lv.n_book} priced) — `
-        + `${lv.basis}. `
+      ? `Tracking ${lv.n_book} names from ${lv.inception} (day ${lv.days}, `
+        + `${lv.n_priced}/${lv.n_book} priced, marked to ${lv.as_of}) — ${lv.basis}. `
       : '';
     fwdMeta.textContent = liveTxt + (fs.n_closed
       ? `${fs.n_closed} closed · ${fmtPct(fs.hit_rate)} beat the S&P · `
         +`${sgnPct(fs.avg_excess)} average excess · ${fs.n_open} open`
-      : `${fs.n_open||0} open, 0 closed. Nothing here is evidence yet — the first `
-        +`rebalance needs a full holding period to finish.`) + stranded;
+      : `${fs.n_open||0} scoreable rebalances open, 0 closed. Nothing in this table `
+        +`is evidence yet — the clock above is what is accruing it, and the first `
+        +`rebalance still needs a full holding period to finish.`) + stranded;
   }
 
   // ---- BACKTEST-SEEDED log (newest first) — NOT out-of-sample ----

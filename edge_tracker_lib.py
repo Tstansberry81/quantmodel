@@ -445,16 +445,51 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
         out.sort(key=lambda h: (h["ret"] if h["ret"] is not None else -1e9), reverse=True)
         return out
 
-    def _closes(opened):
-        # close date ~ hold trading days later (approx via 7/5 calendar scaling)
-        return str(np.datetime64(opened + np.timedelta64(int(round(hold * 7 / 5)), "D"), "D"))
+    # Exit dates are READ from the panel, not derived. Under the month-start grid
+    # the gap between rebalances runs 15-23 trading days, so no fixed day-count
+    # tiles it. The previous version approximated the exit as hold*7/5 calendar
+    # days -- correct when the clock was a fixed trading-day stride, wrong the
+    # moment rebalancing became month-anchored (30 July 2026). It dated the
+    # 2026-07-01 book's exit to 07-30 when the model actually holds it to 08-03.
+    _nd = getattr(pan, "next_dates", None)
+    _rebal_months = E.clock_spec(hold)["rebal_months"]
+
+    def _closes_at(i):
+        """Exit for closed rebalance `i`: the bar the NEXT book is entered on."""
+        if _nd is not None and i < len(_nd) and pd.notna(_nd[i]):
+            return str(pd.Timestamp(_nd[i]).date())
+        return None
+
+    def _closes_scheduled(opened):
+        """Exit for the OPEN book -- the next rebalance, which has not happened.
+
+        SCHEDULED, not observed: the exchange calendar does not extend into the
+        future, so a holiday on the 1st pushes the real date later. Weekends are
+        skipped here; holidays cannot be. Callers must not present this as a
+        settled date.
+        """
+        if not _rebal_months:
+            return None
+        t = pd.Timestamp(opened)
+        nxt = t.year * 12 + t.month + 1
+        while (nxt - E.ANCHOR_MONTH) % _rebal_months != 0:
+            nxt += 1
+        d = pd.Timestamp(year=(nxt - 1) // 12, month=(nxt - 1) % 12 + 1, day=1)
+        # New Year's Day is the only fixed-date US market holiday that can fall on
+        # a month's 1st, so it is the one holiday knowable in advance. Everything
+        # else (Good Friday, a funeral closure) still makes this an estimate.
+        if d.month == 1 and d.day == 1:
+            d += pd.Timedelta(days=1)
+        while d.weekday() >= 5:                       # Sat/Sun -> next Monday
+            d += pd.Timedelta(days=1)
+        return str(d.date())
 
     for i in range(T):
         edge_ret = float(net[i])
         sp_ret = float(spxf[i]) if spxf[i] == spxf[i] else 0.0
         log.append({
             "opened": str(bdates[i].date()),
-            "closes": _closes(bdates[i]),
+            "closes": _closes_at(i),
             "status": "CLOSED",
             "edge_ret": edge_ret,
             "sp_ret": sp_ret,
@@ -472,7 +507,8 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
         sp_ret = float(pan.live_spx_todate) if pan.live_spx_todate == pan.live_spx_todate else 0.0
         log.append({
             "opened": str(pd.Timestamp(pan.live_date).date()),
-            "closes": _closes(np.datetime64(pd.Timestamp(pan.live_date), "ns")),
+            "closes": _closes_scheduled(pan.live_date),
+            "closes_scheduled": True,     # next rebalance, not yet on the calendar
             "status": "OPEN",
             "edge_ret": edge_ret,
             "sp_ret": sp_ret,
@@ -570,30 +606,73 @@ def _forward_log(snaps, full_log, cfg, book_date):
             and x.get("spec_sig") != sig
             and (x.get("logged_at") or "") > (s.get("logged_at") or "")
             for x in snaps)
+        # BACKFILLED: written down materially AFTER the date it is dated, so part
+        # or all of its "forward" window was already in the past when the basket
+        # was chosen. This is not a presentation nicety -- without it the
+        # 2026-07-01 v5 book (first logged 2026-07-30, by which point ~91% of its
+        # 07-01 -> 08-03 window had elapsed) would flip to CLOSED on 3 August and
+        # post a hindsight return inside the panel labelled "the only
+        # out-of-sample evidence". Kept visible for provenance, never scored --
+        # the same treatment STRANDED and SUPERSEDED already get.
+        backfilled = _logged_late(bd, s.get("logged_at"))
         closed = match or {}
         out.append({
             "book_date": bd,
             "closes": closed.get("closes"),
             "logged_at": s.get("logged_at"),
+            "logged_lag_days": _logged_lag_days(bd, s.get("logged_at")),
             "tickers": s.get("tickers", []),
             "n": s.get("n"),
             "clock": s.get("clock"),
             "status": ("SUPERSEDED" if superseded else
-                       "STRANDED" if stranded else ("OPEN" if is_open else "CLOSED")),
+                       "STRANDED" if stranded else
+                       "BACKFILLED" if backfilled else
+                       ("OPEN" if is_open else "CLOSED")),
             "spec_sig": sig,
             "stranded_reason": (
                 "replaced by a later book for the same date after a change to the "
                 "selection rules — kept as a record of what was written down, but "
                 "it is not what the model holds" if superseded else
                 "recorded on a rebalance clock this model no longer runs, so no "
-                "closing date exists for it" if stranded else None),
-            "edge_ret": None if is_open else closed.get("edge_ret"),
-            "sp_ret": None if is_open else closed.get("sp_ret"),
-            "excess": None if is_open else closed.get("excess"),
-            "holdings": None if is_open else closed.get("holdings"),
+                "closing date exists for it" if stranded else
+                "written down after the date it is dated, so its holding window was "
+                "already under way — shown for provenance, never scored, because a "
+                "return measured over a window that had already happened is a "
+                "backtest, not forward evidence" if backfilled else None),
+            # Backfilled rows are scored as strictly as stranded ones: never.
+            "edge_ret": None if (is_open or backfilled) else closed.get("edge_ret"),
+            "sp_ret": None if (is_open or backfilled) else closed.get("sp_ret"),
+            "excess": None if (is_open or backfilled) else closed.get("excess"),
+            "holdings": None if (is_open or backfilled) else closed.get("holdings"),
         })
     out.sort(key=lambda e: (e["book_date"] or ""))
     return out
+
+
+def _logged_lag_days(book_date, logged_at):
+    """Calendar days between the date a book is DATED and the wall-clock moment
+    it was first written down. Zero (or negative) is what forward evidence looks
+    like; a large positive number means the window was already running."""
+    if not book_date or not logged_at:
+        return None
+    try:
+        lg = pd.Timestamp(logged_at)
+        if lg.tz is not None:
+            lg = lg.tz_convert(None)
+        return int((lg.normalize() - pd.Timestamp(book_date).normalize()).days)
+    except Exception:
+        return None
+
+
+# Entry is at the close AFTER the book date, so a row logged that day or the next
+# session is genuine. 3 calendar days covers a weekend without letting real
+# hindsight through.
+_LOGGED_LATE_DAYS = 3
+
+
+def _logged_late(book_date, logged_at):
+    lag = _logged_lag_days(book_date, logged_at)
+    return lag is not None and lag > _LOGGED_LATE_DAYS
 
 
 def _forward_stats(flog):
@@ -607,9 +686,10 @@ def _forward_stats(flog):
     # record ends up looking shorter than it is with no explanation on the page.
     n_stranded = sum(1 for e in flog if e["status"] == "STRANDED")
     n_superseded = sum(1 for e in flog if e["status"] == "SUPERSEDED")
+    n_backfilled = sum(1 for e in flog if e["status"] == "BACKFILLED")
     if not closed:
         return {"n_closed": 0, "n_open": n_open, "n_stranded": n_stranded,
-                "n_superseded": n_superseded,
+                "n_superseded": n_superseded, "n_backfilled": n_backfilled,
                 "hit_rate": None,
                 "avg_excess": None, "avg_edge_ret": None, "avg_sp_ret": None,
                 "first_logged": (flog[0].get("logged_at") if flog else None)}
@@ -619,6 +699,7 @@ def _forward_stats(flog):
         "n_open": n_open,
         "n_stranded": n_stranded,
         "n_superseded": n_superseded,
+        "n_backfilled": n_backfilled,
         "hit_rate": sum(1 for v in ex if v > 0) / len(ex),
         "avg_excess": sum(ex) / len(ex),
         "avg_edge_ret": sum(e["edge_ret"] for e in closed) / len(closed),

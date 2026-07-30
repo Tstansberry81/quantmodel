@@ -77,6 +77,41 @@ for v5. Corrected in `static/js/edge.js`.
 changes the panel fingerprint and invalidates the shipped bundle, so it is
 batched for the next rebuild+republish rather than triggering one for a comment.
 
+### Forward-record integrity — backfilled books are never scored (2026-07-30)
+
+Not a model change; no selection rule moved. `edge_lib.py` untouched, so the
+shipped panel fingerprint is unaffected.
+
+Two defects in the tracker, both introduced by the move to month-anchored
+rebalancing earlier the same day:
+
+**1. Exit dates were approximated, not read.** `_closes` derived the exit as
+`hold × 7/5` calendar days from the open. That is right for a fixed trading-day
+stride and wrong for a month grid, where the gap runs 15–23 trading days. It
+dated the 2026-07-01 book's exit to 07-30 when the model actually holds it to
+08-03. Exits now come from `EdgePanel.next_dates` (exact, for closed rows) or
+from the anchored month grid (scheduled, flagged `closes_scheduled`, for the
+open row — future holidays are unknowable).
+
+**2. A backfilled book was about to be scored as forward evidence.** The v5
+book is *dated* 2026-07-01 but was first written down 2026-07-30, once the
+solvency screens shipped — by which point ~91% of its 07-01 → 08-03 window had
+already elapsed. On 3 August it would have flipped to CLOSED and posted that
+return inside the panel headed "the only out-of-sample evidence." A basket
+chosen with the window's outcome already visible is a backtest.
+
+Rows whose `logged_at` postdates their `book_date` by more than 3 calendar days
+(enough to cover a weekend; entry is at the next close) now get status
+`BACKFILLED` — shown for provenance, never scored, never counted, exactly like
+`STRANDED` and `SUPERSEDED`. Precedence is SUPERSEDED > STRANDED > BACKFILLED,
+so no existing label changes. Every row is now annotated with the gap between
+when it is dated and when it was recorded, because that gap is the single number
+that decides whether a row is evidence.
+
+Consequence, stated plainly on the page: **the forward record has scored zero
+rebalances.** The live daily mark (inception 2026-07-30) is what is accruing
+evidence; the first scoreable rebalance closes 2026-08-03.
+
 ### Tested after v5 and REJECTED — revenue-growth gates (2026-07-30)
 
 `rev_growth` is 96% populated and stored as a fraction (median +7.9% YoY).
