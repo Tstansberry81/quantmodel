@@ -364,7 +364,27 @@ def api_diag():
         "panel_cache_dir": str(edge_lib.PANEL_CACHE_DIR),
         "compute_lock_held": _COMPUTE_LOCK.locked(),
         "memo_keys": [str(k) for k in _COMPUTE_MEMO],
+        # WHERE is the lock holder? A held lock with an empty memo means a thread
+        # is inside fn() and has been for a while; the only way to know which
+        # line without guessing is to look at every thread's stack. Trimmed to
+        # our own frames so the output stays readable.
+        "threads": _thread_stacks(),
     })
+
+
+def _thread_stacks() -> dict:
+    import sys as _s, traceback, threading as _th
+    names = {t.ident: t.name for t in _th.enumerate()}
+    out = {}
+    for tid, frame in _s._current_frames().items():
+        stack = traceback.extract_stack(frame)
+        ours = [f"{f.filename.rsplit('/',1)[-1]}:{f.lineno} {f.name}"
+                for f in stack
+                if any(m in f.filename for m in ("app.py", "edge_lib", "edge_data",
+                                                 "edge_tracker_lib", "export_vision"))]
+        out[names.get(tid, str(tid))] = ours[-6:] or [f"{stack[-1].filename.rsplit('/',1)[-1]}:"
+                                                      f"{stack[-1].lineno} {stack[-1].name}"]
+    return out
 
 
 @app.get("/api/meta")
