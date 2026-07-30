@@ -18,6 +18,7 @@ import sys
 # unpickles fine locally, so give the interpreter headroom before anything
 # imports pandas. 1000 (the default) is the only thing that was ever tight.
 sys.setrecursionlimit(20000)
+import threading
 import time
 from collections import defaultdict
 from functools import lru_cache
@@ -135,6 +136,20 @@ def _safe(fn):
         return jsonify({"ok": False, "reason": f"{type(e).__name__}: {e}"})
 
 
+# Only ONE heavy computation at a time, process-wide.
+#
+# gunicorn runs --threads 4, and nothing below the request handlers takes a lock
+# except the panel build. So four cold requests each built their own daily
+# series concurrently -- four copies of the most memory-hungry computation in
+# the process -- and OOM-killed the 2Gi instance three times on 2026-07-30
+# (18:09, 18:14, 18:19), the last one 28 seconds after a deploy went live.
+#
+# This costs nothing real. The work is CPU-bound on a single-worker plan, so
+# concurrency was never buying throughput -- the caches are. And because
+# lru_cache returns a HIT without entering the function body, cache hits never
+# touch this lock; only misses serialize. A warm page load is unaffected.
+_COMPUTE_LOCK = threading.Lock()
+
 # Public selector space = windows(7) x holds(4) x mixes(5) x n(6) = 840 combos.
 # Cache ABOVE that so a client cycling parameters can never evict-and-recompute:
 # each combo is computed at most once per worker.
@@ -149,9 +164,10 @@ def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     # only `hold` would leave rebal_months at the shipped value and report a
     # monthly book on (say) a 3-month annualization: one number in, a coherent
     # pair out.
-    return edge_lib.run_edge_backtest(
-        window=window,
-        spec={**edge_lib.clock_spec(hold), "growth_mix": mix, "n": n})
+    with _COMPUTE_LOCK:
+        return edge_lib.run_edge_backtest(
+            window=window,
+            spec={**edge_lib.clock_spec(hold), "growth_mix": mix, "n": n})
 
 
 def _warm_caches():
@@ -225,7 +241,8 @@ def api_edge_backtest():
 # trade against a 2 GB ceiling.
 @lru_cache(maxsize=12)
 def _cached_tracker(hold: int, window: str, mix: float, n: int):
-    return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
+    with _COMPUTE_LOCK:
+        return edge_tracker_lib.tracker_state(hold=hold, window=window, mix=mix, n=n)
 
 
 @app.get("/api/edge_tracker")
