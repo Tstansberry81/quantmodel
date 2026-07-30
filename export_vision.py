@@ -118,6 +118,10 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
                    "signal": spec.get("signal"),
                    "mcap_floor_bn": spec.get("mcap_floor_bn"),
                    "sector_cap": spec.get("sector_cap"),
+                   # The solvency screens decide which names are eligible at all,
+                   # so the product page has to be able to state them.
+                   "fcf_positive": spec.get("fcf_positive"),
+                   "debt_ebitda_max": spec.get("debt_ebitda_max"),
                    "continuous_regime": spec.get("continuous_regime"),
                    "vol_target": spec.get("vol_target"),
                    "cost_bps": spec.get("cost_bps", 10)},

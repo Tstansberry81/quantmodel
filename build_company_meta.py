@@ -1,4 +1,4 @@
-"""Build data/artifacts/company_meta.json — the industry / location sidecar.
+"""Build company_meta.json — the industry / location sidecar.
 
 WHY A SIDECAR AND NOT THE INGEST
 --------------------------------
@@ -8,8 +8,11 @@ artifact already stores. But sharadar_ingest.py does not keep it, and re-running
 the ingest to add one string means re-downloading and re-pickling ~2.5GB of
 prices for a 200KB fact.
 
-So this reads the TICKERS export directly and writes a small JSON next to the
-artifact. make_data_bundle.py globs data/artifacts/*, so it ships automatically.
+So this reads the TICKERS export directly and writes a small JSON at the repo
+root, where it is tracked in git and deploys with the code. It lived under
+data/artifacts at first, which is gitignored and ships only inside the ~1GB data
+bundle -- so the industry chips on Vision stayed blank until a republish, for a
+2.6MB file that has nothing to do with the price data.
 
 ONE FACT, ONE SOURCE: this file deliberately does NOT carry `sector`. The
 artifact already has sector, and a second copy of the same field in a file that
@@ -22,12 +25,13 @@ Keyed by TICKER, not company_key. The artifact's company_key embeds the exchange
 description. Tickers can be reused across decades, but this is display text for
 names in a CURRENT book, so the reuse case cannot arise.
 
-    python build_company_meta.py            # writes data/artifacts/company_meta.json
+    python build_company_meta.py            # writes ./company_meta.json
     python build_company_meta.py --all      # every equity ticker, not just artifact names
 """
 from __future__ import annotations
 import argparse
 import json
+import pathlib
 import pickle
 import zipfile
 
@@ -36,7 +40,13 @@ import pandas as pd
 import config
 
 KEEP = ("name", "industry", "sicindustry", "category", "location", "companysite")
-OUT = config.ARTIFACT_DIR / "company_meta.json"
+# Repo root, NOT data/artifacts. This file is ~2.6MB of static industry labels
+# that change only when the ticker universe does -- it has no reason to ride
+# along with a ~1GB data bundle. It sat under data/ (gitignored) at first, which
+# meant it could only reach production via a bundle republish, and the industry
+# chips on Vision were silently blank until then. Tracked in git, it deploys with
+# the code.
+OUT = pathlib.Path(__file__).parent / "company_meta.json"
 TICKERS_ZIP = config.ROOT / "data" / "sharadar" / "TICKERS.zip"
 
 
@@ -87,7 +97,6 @@ def main() -> None:
     args = ap.parse_args()
 
     meta = build(limit_to_artifact=not args.all)
-    config.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(meta, indent=0, sort_keys=True), encoding="utf-8")
     n_ind = sum(1 for v in meta.values() if v.get("industry"))
     print(f"wrote {OUT} — {len(meta):,} tickers, {n_ind:,} with an industry "

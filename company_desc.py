@@ -49,7 +49,11 @@ log = logging.getLogger(__name__)
 
 CACHE_PATH = pathlib.Path(os.environ.get(
     "EDGE_DESC_PATH", str(config.CACHE_DIR / "company_desc.json")))
-META_PATH = config.ARTIFACT_DIR / "company_meta.json"
+# Repo copy first, bundle copy second. The repo copy deploys with the code; the
+# artifact-dir path is kept so an older bundle that carries one still works.
+_META_CANDIDATES = (pathlib.Path(__file__).parent / "company_meta.json",
+                    config.ARTIFACT_DIR / "company_meta.json")
+META_PATH = next((p for p in _META_CANDIDATES if p.exists()), _META_CANDIDATES[0])
 # "yahoo" (default) or "metadata" -- see the module docstring.
 SOURCE = os.environ.get("EDGE_DESC_SOURCE", "yahoo").strip().lower()
 
