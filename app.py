@@ -149,28 +149,49 @@ def _safe(fn):
 # lru_cache returns a HIT without entering the function body, cache hits never
 # touch this lock; only misses serialize. A warm page load is unaffected.
 _COMPUTE_LOCK = threading.Lock()
-# How long a request will WAIT for its turn before giving up. Without a bound,
-# four queued computes hold all four gunicorn threads indefinitely and nothing
-# else can be served -- including /api/meta, which is the Render healthCheckPath.
-# Observed directly: with four heavy requests queued, /api/meta timed out at 30s.
-# A 503 that says "busy, retry" is a far better outcome than a starved health
-# check, because Render restarts an instance whose health check stops answering.
-_COMPUTE_WAIT_S = 75
+# Results published by whichever thread actually did the work, keyed by args.
+# lru_cache does NOT dedupe in-flight calls: it only stores a result once the
+# wrapped call RETURNS. So the boot warm-up thread enters the body and computes
+# for minutes while a request for the SAME parameters also enters the body, waits
+# on the lock, and then recomputes the identical result. Queued requests were
+# doing redundant work instead of collecting the first thread's answer -- the
+# same double-checked-locking gap already fixed in load_edge_panel, one layer up.
+_COMPUTE_MEMO: dict = {}
+# How long to WAIT for a turn. Long enough to outlast a cold boot warm-up (which
+# holds the lock for minutes on a small instance) so a queued request wakes up,
+# finds the memo populated and returns instantly. Bounded so threads are never
+# held indefinitely -- /api/meta is the Render healthCheckPath, and a starved
+# health check gets the instance restarted.
+_COMPUTE_WAIT_S = 240
 
 
-def _computed(fn):
-    """Run a cached compute under the global lock, bounded.
+def _computed(key, fn):
+    """Run `fn` once per key, process-wide, and share the result.
 
-    Cache HITS never reach here -- lru_cache returns before the wrapped body
-    runs -- so this only gates genuine work."""
+    Three properties that matter, in order:
+      1. a HIT never takes the lock (checked before acquiring)
+      2. a thread that waited gets the winner's RESULT, not a second computation
+      3. waiting is bounded, so a slow compute cannot starve the health check
+    """
+    hit = _COMPUTE_MEMO.get(key)
+    if hit is not None:
+        return hit
     if not _COMPUTE_LOCK.acquire(timeout=_COMPUTE_WAIT_S):
         raise TimeoutError(
-            "the server is busy computing another backtest; please retry in a "
-            "few seconds (only one runs at a time, deliberately — see app.py)")
+            "the server is still warming up (one heavy computation runs at a "
+            "time, deliberately). Retry in a few seconds.")
     try:
-        return fn()
+        hit = _COMPUTE_MEMO.get(key)          # someone finished while we waited
+        if hit is not None:
+            return hit
+        val = fn()
+        if len(_COMPUTE_MEMO) > 64:           # bounded; lru_cache above is the real cache
+            _COMPUTE_MEMO.clear()
+        _COMPUTE_MEMO[key] = val
+        return val
     finally:
         _COMPUTE_LOCK.release()
+
 
 # Public selector space = windows(7) x holds(4) x mixes(5) x n(6) = 840 combos.
 # Cache ABOVE that so a client cycling parameters can never evict-and-recompute:
@@ -186,9 +207,11 @@ def _cached_edge_backtest(window: str, hold: int, mix: float, n: int):
     # only `hold` would leave rebal_months at the shipped value and report a
     # monthly book on (say) a 3-month annualization: one number in, a coherent
     # pair out.
-    return _computed(lambda: edge_lib.run_edge_backtest(
-        window=window,
-        spec={**edge_lib.clock_spec(hold), "growth_mix": mix, "n": n}))
+    return _computed(
+        ("bt", window, hold, mix, n),
+        lambda: edge_lib.run_edge_backtest(
+            window=window,
+            spec={**edge_lib.clock_spec(hold), "growth_mix": mix, "n": n}))
 
 
 def _warm_caches():
@@ -262,8 +285,10 @@ def api_edge_backtest():
 # trade against a 2 GB ceiling.
 @lru_cache(maxsize=12)
 def _cached_tracker(hold: int, window: str, mix: float, n: int):
-    return _computed(lambda: edge_tracker_lib.tracker_state(
-        hold=hold, window=window, mix=mix, n=n))
+    return _computed(
+        ("tr", hold, window, mix, n),
+        lambda: edge_tracker_lib.tracker_state(
+            hold=hold, window=window, mix=mix, n=n))
 
 
 @app.get("/api/edge_tracker")
