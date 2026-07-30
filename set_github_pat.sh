@@ -34,14 +34,43 @@ printf 'protocol=https\nhost=github.com\nusername=%s\npassword=%s\n\n' "$USER_NA
   | git -C "$REPO_DIR" credential approve
 unset PAT
 
-echo "Stored. Verifying access…"
-if git -C "$REPO_DIR" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
-  ahead="$(git -C "$REPO_DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo '?')"
-  echo "OK — authenticated. $ahead local commit(s) ready to push."
-  echo "Run:  git -C \"$REPO_DIR\" push origin main"
-else
-  echo "FAILED — the token was stored but GitHub rejected it." >&2
-  echo "Check it hasn't expired and that it grants Contents:read/write on" >&2
-  echo "Tstansberry81/quantmodel and Tstansberry81/vision." >&2
+# Verify WRITE, not just auth.
+#
+# This used to check `git ls-remote`, which only proves the token can READ. A
+# fine-grained PAT with Contents:read passes that happily -- and then every push
+# fails with 403 "Write access to repository not granted". That false pass is how
+# a read-only token sat in this keychain undetected while five commits piled up
+# locally. `push --dry-run` negotiates the real receive-pack permission and
+# updates nothing, so it catches the difference.
+#
+# Both repos are checked. The keychain entry is per-HOST (github.com) so one
+# token serves both, but a fine-grained PAT grants access per REPOSITORY and can
+# easily cover one and not the other.
+VISION_DIR="$(cd "$REPO_DIR/../vision" 2>/dev/null && pwd || true)"
+echo "Stored. Verifying write access…"
+rc=0
+for d in "$REPO_DIR" ${VISION_DIR:+"$VISION_DIR"}; do
+  git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
+  name="$(basename "$d")"
+  if err="$(git -C "$d" push --dry-run origin HEAD 2>&1)"; then
+    ahead="$(git -C "$d" rev-list --count @{u}..HEAD 2>/dev/null || echo '?')"
+    echo "  OK   $name — write confirmed, $ahead commit(s) ready to push."
+  else
+    rc=1
+    reason="$(printf '%s' "$err" | grep -iE 'denied|not granted|403|401|not found' | head -1)"
+    echo "  FAIL $name — ${reason:-see git output}" >&2
+  fi
+done
+if [ "$rc" -ne 0 ]; then
+  echo >&2
+  echo "Stored, but it cannot WRITE everywhere it needs to." >&2
+  echo "GitHub -> Settings -> Developer settings -> Personal access tokens ->" >&2
+  echo "Fine-grained tokens -> your token:" >&2
+  echo "  * Repository access must list BOTH quantmodel and vision" >&2
+  echo "  * Repository permissions -> Contents -> Read and write" >&2
   exit 1
 fi
+echo
+echo "All good. Push with:"
+echo "  git -C \"$REPO_DIR\" push"
+[ -n "$VISION_DIR" ] && echo "  git -C \"$VISION_DIR\" push"
