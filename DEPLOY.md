@@ -69,3 +69,51 @@ zip we made earlier). **Rotate it at fiscal.ai.** The live site does NOT need it
   as expected performance.
 - **Railway/Fly** work the same way (Procfile + `DATA_URL`); only the dashboard
   differs.
+
+## Concurrency and memory (learned the hard way, 2026-07-30)
+
+Four OOM kills in one afternoon on the 2 GB plan, four distinct causes. Worth
+reading before changing anything in the request path.
+
+**The shape of the problem.** One worker, four threads, and several operations
+that each hold hundreds of MB while running. Nothing was bounded, so any two of
+them overlapping could exceed the ceiling. Each fix below was real and none was
+sufficient alone — which is why the site 502'd repeatedly while they landed.
+
+1. **Concurrent panel builds.** `lru_cache` takes no lock across the wrapped
+   call, so the boot warm-up thread and an incoming request both missed and both
+   built the panel. A build peaks far above the finished 141 MB pickle because it
+   holds every name's price arrays at once. → build lock in `load_edge_panel`.
+
+2. **An oversized response cache.** `_cached_tracker` was `maxsize=1024` at
+   489 KB per payload — ~500 MB of ceiling. The comment justifying it ("~tens of
+   KB → ~25MB") was written for `_cached_edge_backtest`, whose payload really is
+   12 KB, and was never re-checked against this endpoint. The monthly clock then
+   doubled the payload. → `maxsize=12`.
+
+3. **Concurrent computes.** Nothing between the request handler and the panel
+   took a lock, so four cold requests each built their own daily series.
+   → one process-wide compute lock.
+
+4. **Queued requests recomputing instead of sharing.** `lru_cache` does not
+   dedupe IN-FLIGHT calls — it stores a result only when the call returns. So
+   everything waiting on the lock recomputed the same thing and the queue never
+   drained. → `_computed(key, fn)` re-checks a memo after acquiring.
+
+**Rules that follow.**
+
+- A cache size is a memory budget. Measure the payload before choosing one, and
+  never copy a size across endpoints — measure that endpoint's payload too.
+- Any lock in the request path must be BOUNDED. An unbounded wait starved
+  `/api/meta`, which is the `healthCheckPath`, and Render restarts an instance
+  whose health check stops answering. Trading an OOM for that is not a fix.
+- Anything guarded by a lock needs a double-check after acquiring, or waiters
+  duplicate the work they queued for.
+- Concurrency was never buying throughput here (one worker, CPU-bound work).
+  The caches are what make it fast. Serializing costs nothing real.
+
+**Never edit `edge_lib.py` after publishing a bundle.** The panel fingerprint
+hashes that file, so the shipped panel is instantly stale and every cold start
+rebuilds it — silently, because a stale panel is a cache miss and not an error.
+`publish_bundle.py` now refuses to ship a bundle whose panel filename doesn't
+match the current spec, or whose `edge_lib.py` has uncommitted changes.
