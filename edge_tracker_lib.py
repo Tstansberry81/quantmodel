@@ -713,6 +713,13 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             "stats": stats,
             "spec": {
                 "hold_days": hold, "n": n, "mcap_floor_bn": MCAP_FLOOR / 1e9,
+                # The clock CONVENTION, not just its length. Omitting this left
+                # the page reporting "hold_days: 21" for books that are dated the
+                # first trading day of a month -- true but incomplete, and the
+                # incompleteness is the interesting part. Derived from the hold
+                # actually being viewed, so the exploratory clock buttons report
+                # their own convention rather than the shipped one.
+                "rebal_months": E.clock_spec(hold)["rebal_months"],
                 "corr_cap": CORR_CAP, "regime_expo": REGIME_EXPO,
                 "cost_bps": COST_BPS, "signal": _SIGNAL_LABEL,
                 "sector_cap": SECTOR_CAP,
