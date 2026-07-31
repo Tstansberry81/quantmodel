@@ -649,6 +649,29 @@ def _forward_log(snaps, full_log, cfg, book_date):
     return out
 
 
+def _committed_on(flog, current_book):
+    """The date this exact book was first written down, per the forward record.
+
+    The live mark's inception should be the day the book was COMMITTED TO, not
+    the day the process noticed it. Those differ whenever the live state is
+    lost, and the forward record is the durable copy: it is snapshotted to the
+    persistent disk the moment a book is picked, so it survives the deploys that
+    used to reset the mark.
+
+    Matched on the exact ticker set rather than the book date, because a book
+    date is reused when the rules change mid-period (the 2026-07-01 date carries
+    both the v4 and v5 baskets) and those are different portfolios.
+    """
+    want = sorted(str(b["ticker"]).upper() for b in (current_book or [])
+                  if b.get("ticker"))
+    if not want:
+        return None
+    dates = [(r.get("logged_at") or "")[:10] for r in (flog or [])
+             if r.get("logged_at")
+             and sorted(str(t).upper() for t in (r.get("tickers") or [])) == want]
+    return min(dates) if dates else None
+
+
 def _logged_lag_days(book_date, logged_at):
     """Calendar days between the date a book is DATED and the wall-clock moment
     it was first written down. Zero (or negative) is what forward evidence looks
@@ -859,7 +882,9 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         if hold == HOLD and n == N and mix == GROWTH_MIX:
             try:
                 live = live_tracker.summary(
-                    live_tracker.state(current_book, spec_version="v5"))
+                    live_tracker.state(current_book, spec_version="v5",
+                                       committed_on=_committed_on(
+                                           forward_log, current_book)))
             except Exception as e:                          # noqa: BLE001
                 # A price-feed problem must never take the tracker page down.
                 print(f"  live tracker unavailable: {type(e).__name__}: {e}")

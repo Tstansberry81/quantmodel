@@ -37,6 +37,7 @@ import edge_data as engine   # self-contained Edge data layer (was qmodel.engine
 # stays lazy behind lru_cache inside edge_lib.)
 import edge_lib
 import edge_tracker_lib
+import live_tracker         # /api/diag reports where its state file lands
 import export_vision        # imports edge_lib/edge_tracker_lib too — same reason
 
 
@@ -355,6 +356,32 @@ def api_edge_tracker():
     return _safe(lambda: _cached_tracker(hold, window, mix, n))
 
 
+def _state_paths():
+    """Durability of the files that hold unrecoverable state.
+
+    `ephemeral` is the flag that matters: it means the path sits under the
+    deploy directory and will be wiped by the next push. Both of these hold
+    data no rebuild can reproduce -- the forward record's logged_at timestamps
+    and the live mark's ENTRY PRICES -- so neither has a recovery path once it
+    is gone. Reported rather than assumed, because the failure is silent.
+    """
+    import pathlib as _pl
+    src = _pl.Path(__file__).resolve().parent
+    out = {}
+    for name, path in (("forward_record", edge_tracker_lib.SNAPSHOT_PATH),
+                       ("live_mark", live_tracker.STATE_PATH)):
+        p = _pl.Path(path)
+        rec = {"path": str(p), "exists": p.exists()}
+        try:
+            rec["ephemeral"] = p.resolve().is_relative_to(src)
+        except Exception:                                # noqa: BLE001
+            rec["ephemeral"] = None
+        if p.exists():
+            rec["size_kb"] = round(p.stat().st_size / 1e3, 1)
+        out[name] = rec
+    return out
+
+
 @app.get("/api/diag")
 def api_diag():
     """Why is the panel being rebuilt? Answers it directly instead of by inference.
@@ -390,6 +417,12 @@ def api_diag():
                   "lb": edge_lib.LB, **clock,
                   "universe": edge_lib.UNIVERSE},
         "panel_cache_dir": str(edge_lib.PANEL_CACHE_DIR),
+        # WHERE does state that cannot be rebuilt actually live, and is it there?
+        # A file on ephemeral storage looks identical to a healthy one from the
+        # outside -- it just quietly restarts on every deploy, and the page reads
+        # correct for a run one deploy old. That is how the live mark spent a day
+        # resetting to "day 1" with the disk mounted and working the whole time.
+        "state": _state_paths(),
         "compute_lock_held": _COMPUTE_LOCK.locked(),
         "memo_keys": [str(k) for k in _COMPUTE_MEMO],
         # WHERE is the lock holder? A held lock with an empty memo means a thread

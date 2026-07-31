@@ -33,17 +33,50 @@ import os
 import pathlib
 import threading
 
+import pandas as _pd     # already resident: every caller of this module imports it
+
 import config
 
 log = logging.getLogger(__name__)
 
-# Beside the forward record, on the persistent disk. The entry prices ARE the
-# record: lose them and the since-inception return is unrecoverable, because
-# yfinance will happily serve today's price but not what we paid.
-STATE_PATH = pathlib.Path(os.environ.get(
-    "EDGE_LIVE_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "data", "cache", "edge_live.json")))
+def _default_state_path() -> str:
+    """Where the live mark lives when EDGE_LIVE_PATH is not set.
+
+    Beside whatever is ALREADY persisting -- never beside the code. The old
+    default was the repo's own data/cache, which Render wipes on every deploy;
+    that silently restarted the mark at day 1 three times on 2026-07-31 alone.
+    A tracker that resets on each deploy is indistinguishable on the page from
+    one that simply never accrues, which is why it survived a full day of
+    verification: every reading of it was correct for a run one deploy old.
+
+    The disk was mounted and working the whole time. EDGE_TRACKER_PATH and
+    EDGE_PANEL_CACHE_DIR both pointed at it; EDGE_LIVE_PATH was added to
+    render.yaml but never applied to the running service, so this one file --
+    the only one holding unrecoverable data -- landed on ephemeral storage.
+
+    So: derive from a sibling that already works rather than requiring a new
+    env var for every new file. Adding a file should not be able to leave the
+    service half-persistent.
+    """
+    for var, is_file in (("EDGE_LIVE_PATH", True),      # explicit wins
+                         ("EDGE_TRACKER_PATH", True),   # forward record — same lifetime
+                         ("EDGE_PANEL_CACHE_DIR", False)):
+        v = os.environ.get(var)
+        if not v:
+            continue
+        if var == "EDGE_LIVE_PATH":
+            return v
+        d = os.path.dirname(v) if is_file else v
+        if d:
+            return os.path.join(d, "edge_live.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "data", "cache", "edge_live.json")
+
+
+# The entry prices ARE the record: lose them and the since-inception return is
+# unrecoverable, because yfinance will happily serve today's price but never
+# what we paid.
+STATE_PATH = pathlib.Path(_default_state_path())
 
 _LOCK = threading.Lock()
 # yfinance is a network call in a request path. One fetch per this many seconds;
@@ -83,12 +116,21 @@ def _closes(tickers: list[str], days: int = 10):
     return close.dropna(how="all")
 
 
-def state(book: list[dict] | None = None, spec_version: str = "") -> dict:
+def state(book: list[dict] | None = None, spec_version: str = "",
+          committed_on: str | None = None) -> dict:
     """Current live mark. Starts a new run if the book changed.
 
     `book` is the tracker's current_book (ticker + name). Passing None reads the
     stored state without touching the network — used by callers that only want
     to display, never to start a run.
+
+    `committed_on` (YYYY-MM-DD) is the date this exact book was first written
+    down, from the forward record. When a run starts, inception belongs on that
+    date rather than on whichever day this process happened to notice: the book
+    was fixed then, and the closes for a past date are a matter of record, not a
+    choice made with hindsight. It also makes a lost state file recoverable
+    instead of silently re-dating inception to today — which reads on the page
+    as a tracker that never accrues.
     """
     with _LOCK:
         st = _load()
@@ -104,7 +146,18 @@ def state(book: list[dict] | None = None, spec_version: str = "") -> dict:
             close = _closes(tickers + [config.BENCH_SP500])
             if close is None:
                 return st
+            # Entry bar: the last close AT OR BEFORE the commit date. Falls back
+            # to the latest bar when the commit date is unknown or predates the
+            # fetch window -- never forward of it, which would enter at a price
+            # the book could not have been bought at.
             last = close.index[-1]
+            if committed_on:
+                prior = close.index[close.index <= _pd.Timestamp(committed_on)]
+                if len(prior):
+                    last = prior[-1]
+                else:
+                    log.warning("live tracker: commit date %s predates the price "
+                                "window; entering at %s", committed_on, last.date())
             entry = {t: float(close[t].loc[last]) for t in tickers
                      if t in close and close[t].loc[last] == close[t].loc[last]}
             if len(entry) < len(tickers):
@@ -151,8 +204,16 @@ def state(book: list[dict] | None = None, spec_version: str = "") -> dict:
         spx = float(close[st.get("benchmark", config.BENCH_SP500)].loc[last])
         sp = spx / st["entry_spx"] - 1.0
 
+        # Trading sessions from inception through this bar, counted off the price
+        # index rather than off how many marks we happen to have stored. Those
+        # are different quantities: len(marks) measures OUR uptime, not how long
+        # the position has been held. A process that missed a day, or restarted,
+        # would under-report the holding period and call day 3 "day 1".
+        inc = st.get("inception")
+        sessions = int((close.index >= _pd.Timestamp(inc)).sum()) if inc else len(rets)
+
         mark = {"date": str(last.date()), "edge": edge, "sp": sp,
-                "excess": edge - sp, "n_priced": len(rets)}
+                "excess": edge - sp, "n_priced": len(rets), "sessions": sessions}
         # One mark per DATE, replaced in place: called twice on the same day the
         # second must update the day's number, not append a duplicate row.
         marks = [m for m in st.get("marks", []) if m["date"] != mark["date"]]
@@ -172,7 +233,9 @@ def summary(st: dict) -> dict:
     return {
         "inception": st.get("inception"),
         "as_of": cur["date"],
-        "days": len(marks),
+        # Sessions held, not marks taken. Falls back to the mark count only for
+        # state written before `sessions` existed.
+        "days": cur.get("sessions") or len(marks),
         "edge_ret": cur["edge"],
         "sp_ret": cur["sp"],
         "excess": cur["excess"],
