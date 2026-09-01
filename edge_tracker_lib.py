@@ -507,8 +507,15 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
         td = pan.live_panel.set_index("company_key")["fwd_todate"]
         rets = [float(td.get(ck, float("nan"))) for ck in live_cks]
         rets = [r for r in rets if r == r]
-        edge_ret = float(np.mean(rets)) if rets else 0.0
-        sp_ret = float(pan.live_spx_todate) if pan.live_spx_todate == pan.live_spx_todate else 0.0
+        # ENTRY PENDING: the names are final but the t+1 bar they are bought at
+        # has not closed, so every fwd_todate is NaN. The old `if rets else 0.0`
+        # would render that as a flat 0.00% row sitting next to a real S&P move --
+        # a return for a position nobody has entered yet. None is the truth, and
+        # the page can say "prices at the next close" instead of showing a number.
+        pending = bool(getattr(pan, "live_entry_pending", False)) or not rets
+        edge_ret = float(np.mean(rets)) if rets else None
+        _sp = pan.live_spx_todate
+        sp_ret = float(_sp) if (_sp == _sp and not pending) else None
         log.append({
             "opened": str(pd.Timestamp(pan.live_date).date()),
             "closes": _closes_scheduled(pan.live_date),
@@ -516,8 +523,12 @@ def _paper_log(pan, data, hold, n, mix, live_book, live_cks):
             "status": "OPEN",
             "edge_ret": edge_ret,
             "sp_ret": sp_ret,
-            "excess": edge_ret - sp_ret,
-            "mark_to_market": True,       # partial: the hold window hasn't finished
+            "excess": (None if (edge_ret is None or sp_ret is None)
+                       else edge_ret - sp_ret),
+            "mark_to_market": not pending,   # partial: the hold window hasn't finished
+            "entry_px_pending": pending or None,
+            "entry_date": (str(pd.Timestamp(pan.live_entry_date).date())
+                           if getattr(pan, "live_entry_date", None) is not None else None),
             "holdings": _holdings(live_cks, td),
         })
     return log
@@ -1009,10 +1020,25 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         live = {}
         if hold == HOLD and n == N and mix == GROWTH_MIX:
             try:
+                # While the entry bar is pending, pass None: that is live_tracker's
+                # documented read-only mode. Handing it the new book instead would
+                # start the run TODAY and enter at the book date's close -- the
+                # close the selection was made on, and a day before the model's own
+                # entry. The run starts when the entry bar exists, not before.
+                #
+                # Inception is then the ENTRY BAR, not the commit date. Those were
+                # the same thing only while books were written down late; now that
+                # a book is logged on its own date at zero lag, the commit date is
+                # one session BEFORE the model buys, and using it would credit the
+                # book with a day of return it never held.
+                _pending = bool(getattr(pan, "live_entry_pending", False))
+                _entry = getattr(pan, "live_entry_date", None)
+                _inception = (str(pd.Timestamp(_entry).date()) if _entry is not None
+                              else _committed_on(forward_log, current_book))
                 live = live_tracker.summary(
-                    live_tracker.state(current_book, spec_version="v5",
-                                       committed_on=_committed_on(
-                                           forward_log, current_book)))
+                    live_tracker.state(None if _pending else current_book,
+                                       spec_version="v5",
+                                       committed_on=_inception))
             except Exception as e:                          # noqa: BLE001
                 # A price-feed problem must never take the tracker page down.
                 print(f"  live tracker unavailable: {type(e).__name__}: {e}")
@@ -1037,6 +1063,13 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         return {
             "ok": True,
             "book_date": book_date,
+            # The book is published on its own date, before the close it is bought
+            # at. While this is true the names are final and every return field is
+            # null -- the page must say "entry at the <entry_date> close" rather
+            # than render a 0% that looks like a flat day.
+            "entry_px_pending": bool(getattr(pan, "live_entry_pending", False)),
+            "entry_date": (str(pd.Timestamp(pan.live_entry_date).date())
+                           if getattr(pan, "live_entry_date", None) is not None else None),
             "window": window,
             "current_book": current_book,
             # `log` is BACKTEST-SEEDED history; `forward_log` is the only

@@ -7,17 +7,21 @@
 #
 # SCHEDULE. Cron cannot say "first trading day", so this wakes every weekday of
 # the first eight days at 21:30 UTC (17:30 ET, after the close) and
-# scripts/rebalance_gate.py decides. It proceeds only once the ENTRY BAR -- the
-# session after the book date, which is where edge_lib prices entry -- has
-# closed. Normally that is the evening of the second session, a 1-day lag on the
-# forward record.
+# scripts/rebalance_gate.py decides. It fires TWICE a month:
+#   publish -- the first session's evening. The names are final (12-1 momentum
+#              ends 21 sessions back), so the book goes out and is logged at ZERO
+#              lag. The entry price does not exist yet and is not claimed to.
+#   price   -- the next session's evening. The t+1 entry bar now exists, so
+#              prices land and the live mark starts from that bar.
+# Two Sharadar pulls a month rather than one; see COST below.
 #
 # SECRETS (repo settings -> Secrets and variables -> Actions):
 #   NASDAQ_DATA_LINK_API_KEY   Sharadar seat key, for the bulk pull
 #   RENDER_DEPLOY_HOOK         Render -> quantmodel -> Settings -> Deploy Hook URL
 # The release upload uses the built-in GITHUB_TOKEN (contents: write, below).
 #
-# COST. ~1.7GB pulled and a ~340MB asset uploaded, once a month, ~40 min.
+# COST. ~1.7GB pulled and a ~340MB asset uploaded, TWICE a month (publish +
+# price), ~40 min each.
 
 name: monthly-rebalance
 
@@ -115,5 +119,6 @@ jobs:
             echo ""
             echo "- proceed: \`${{ steps.gate.outputs.proceed }}\`"
             echo "- book date: \`${{ steps.gate.outputs.book_date }}\`"
+            echo "- phase: \`${{ steps.gate.outputs.phase }}\` (publish = names out, entry at next close; price = entry bar landed)"
             echo "- log lag: \`${{ steps.gate.outputs.lag_days }}\` days"
           } >> "$GITHUB_STEP_SUMMARY"

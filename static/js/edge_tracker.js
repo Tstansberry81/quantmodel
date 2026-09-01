@@ -71,6 +71,11 @@ function render(d){
     ...liveCards,
     ['Current book', (d.current_book||[]).length+' names', ''],
     ['Book date', d.book_date||'—', ''],
+    // Entry pending: the names are final, the price they are bought at is not.
+    // Without this the return columns render as bare em-dashes and the page
+    // reads as broken rather than as a book published ahead of its entry.
+    ...(d.entry_px_pending ? [['Entry price',
+        d.entry_date ? 'at the '+d.entry_date+' close' : 'at the next close', '']] : []),
     ['Forward record', `${fmtN(fst.n_closed,0)} closed · ${fmtN(fst.n_open,0)} open`, ''],
     ['Forward hit rate', fst.n_closed ? fmtPct(fst.hit_rate) : 'no data yet',
       fst.n_closed ? cls((fst.hit_rate||0)-0.5) : ''],
@@ -90,6 +95,8 @@ function render(d){
   // "since open" is a mark to the latest close, not a finished trade
   const heldTxt = s.book_is_live
     ? `Open position — bought at the ${d.book_date} rebalance, still held; "since open" is marked to the latest close`
+    : d.entry_px_pending
+    ? `Full-spec Edge picks for ${d.book_date}. These names are final; they are bought at the ${d.entry_date||'next'} close, so there is no return to show yet.`
     : `Full-spec Edge picks as of ${d.book_date}`;
   const regimeTxt = s.book_regime_on === false
     ? ` · MARKET BELOW ITS 200-DAY AVERAGE: exposure cut to ${fmtPct(s.book_exposure)}, rest in cash`

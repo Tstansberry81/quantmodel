@@ -8,27 +8,26 @@ third of the time, and the offset from the 1st to the first session moves every
 month. So the workflow wakes on every weekday of the first eight days and this
 script decides whether to proceed.
 
-WHAT IT WAITS FOR
------------------
-Not the book date -- the ENTRY BAR. edge_lib prices entry at the t+1 close
-(`n_fwd < 1: continue` in _build_edge_panel), so the panel cannot produce a live
-book for rebalance date d until the session AFTER d has closed. Running before
-that yields an empty live panel, which is worse than not running: `live_date` is
-still set while `_current_book` falls back to the previous rebalance, so the
-forward record gets a snapshot dated d carrying the PREVIOUS month's basket.
-(edge_lib.py is patched alongside this so that mislabel cannot happen, but the
-gate still waits, because a book we cannot compute is not a book.)
+WHEN IT FIRES: TWICE
+--------------------
+PUBLISH -- the month's first session, after its close. The selection is already
+final: 12-1 momentum ends 21 sessions back (arr[pos-21]/arr[pos-251]), so nothing
+in the ranking is waiting on today's bar. The names go out now and the forward
+record logs the book on its OWN date, at zero lag.
+
+PRICE -- the next session, after its close. The t+1 bar the book is bought at now
+exists, so entry prices land, the live mark starts from that bar, and the
+published book stops saying "pending".
+
+Missing PUBLISH is survivable: the PRICE run does both at lag 1. The old failure
+mode was missing both, every month, forever.
 
 LATENESS
 --------
-edge_tracker_lib._logged_late marks any book written down more than 3 CALENDAR
-days after its own date as BACKFILLED -- kept for provenance, never scored. So
-this wants to fire on the evening of the entry bar (lag 1 in the common case).
-The residual: when the first trading day of a month is a FRIDAY, the entry bar
-is the following Monday and the earliest possible lag is 3 -- right at the
-boundary. If Sharadar has not published Monday's close by the time we run, the
-retry lands Tuesday at lag 4 and the row is BACKFILLED. That case is reported
-loudly rather than silently accepted; see DEPLOY.md.
+edge_tracker_lib._logged_late marks a book written down more than 3 CALENDAR days
+after its own date as BACKFILLED -- kept for provenance, never scored. Publishing
+on the book date makes lag 0, which retires the Friday-book-date edge case that
+the entry-bar-only schedule could not avoid.
 
 Exit codes are not used for the decision -- GitHub Actions reads the `proceed`
 output. A non-zero exit means the gate itself failed.
@@ -63,37 +62,46 @@ def sessions_this_month(today: pd.Timestamp) -> pd.DatetimeIndex:
 
 
 def decide(today: pd.Timestamp) -> dict:
+    """Two firings a month, not one.
+
+    PUBLISH (the month's first session, after its close): the selection is fully
+    determined -- 12-1 momentum ends 21 sessions back, so nothing in the ranking
+    is waiting on anything. The names go out now, and the forward record gets the
+    book on its own date at ZERO lag, which is the strongest evidence it can
+    carry. The entry price does not exist yet and is not claimed to.
+
+    PRICE (the next session, after its close): the t+1 bar the book is bought at
+    now exists. Refresh so entry prices land, the live mark starts from that bar,
+    and the published book stops saying "pending".
+
+    Missing PUBLISH is survivable -- the PRICE run does both, just at lag 1.
+    Missing both is what the old manual process did every month.
+    """
     sess = sessions_this_month(today)
     if len(sess) == 0:
         return {"proceed": False, "reason": "no sessions in this month yet"}
 
     book_date = sess[0]
-    if len(sess) < 2:
-        return {"proceed": False, "book_date": str(book_date.date()),
-                "reason": f"entry bar not reached yet (book date {book_date.date()}, "
-                          "the panel needs the session after it to price entry)"}
-
-    entry_bar = sess[1]
-    # The entry bar's close has to be IN THE PAST. Equal is not enough: the job
-    # runs at 21:30 UTC, after the 16:00 ET close, so a same-day entry bar is
-    # complete -- but only because of when the workflow is scheduled. Comparing
-    # dates keeps that assumption in one place instead of spread across the
-    # cron expression and this file.
-    if entry_bar.date() > today.date():
-        return {"proceed": False, "book_date": str(book_date.date()),
-                "reason": f"entry bar {entry_bar.date()} has not closed yet"}
-
     lag = (today.normalize() - book_date).days
-    return {
-        "proceed": True,
-        "book_date": str(book_date.date()),
-        "entry_bar": str(entry_bar.date()),
-        "lag_days": lag,
-        # 3 is edge_tracker_lib._LOGGED_LATE_DAYS. Mirrored rather than imported
-        # so the gate stays runnable without the model's dependency tree.
-        "will_backfill": lag > 3,
-        "reason": f"book {book_date.date()}, entry bar {entry_bar.date()} closed, lag {lag}d",
-    }
+    common = {"book_date": str(book_date.date()), "lag_days": lag,
+              # 3 is edge_tracker_lib._LOGGED_LATE_DAYS. Mirrored rather than
+              # imported so the gate runs without the model's dependency tree.
+              "will_backfill": lag > 3}
+
+    if today.normalize() == book_date:
+        return {**common, "proceed": True, "phase": "publish", "entry_bar": "",
+                "reason": f"book {book_date.date()} — publishing the selection, "
+                          "entry priced at the next close"}
+
+    if len(sess) >= 2 and today.normalize() == sess[1]:
+        return {**common, "proceed": True, "phase": "price",
+                "entry_bar": str(sess[1].date()),
+                "reason": f"entry bar {sess[1].date()} closed — pricing the "
+                          f"{book_date.date()} book"}
+
+    return {**common, "proceed": False, "phase": "",
+            "reason": f"not a rebalance session (book {book_date.date()}, "
+                      f"entry bar {sess[1].date() if len(sess) >= 2 else 'pending'})"}
 
 
 def main() -> int:
@@ -124,6 +132,7 @@ def main() -> int:
             fh.write(f"proceed={'true' if d['proceed'] else 'false'}\n")
             fh.write(f"book_date={d.get('book_date', '')}\n")
             fh.write(f"lag_days={d.get('lag_days', '')}\n")
+            fh.write(f"phase={d.get('phase', '')}\n")
     return 0
 
 
