@@ -11,6 +11,7 @@ time. Nothing here mutates the backtest or its caches.
 """
 from __future__ import annotations
 import json
+import logging
 import os
 import pickle
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ import pandas as pd
 import edge_lib as E
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
 import live_tracker          # daily mark-to-market of the open book vs the S&P
+
+# `log` is a local list inside _paper_log, so the module logger is _log.
+_log = logging.getLogger(__name__)
 
 # Full-spec book parameters. READ from EDGE_SPEC, not retyped beside it.
 #
@@ -549,10 +553,64 @@ def _read_snapshots():
         if os.path.exists(SNAPSHOT_PATH):
             with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
                 snaps = json.load(f)
-            return snaps if isinstance(snaps, list) else []
+            if not isinstance(snaps, list):
+                return []
+            return _redate_held_over_august(snaps)
     except (OSError, ValueError):
         pass
     return []
+
+
+# One-shot repair, 2026-09-01. Safe to delete once it has run in production.
+#
+# The 2026-08-03 rebalance never happened -- nothing automated the data refresh,
+# so the panel froze and the 2026-07-01 book stayed open through all of August.
+# The forward record therefore had no August row at all, while the July row sat
+# at BACKFILLED (written down 29 days into its own window).
+#
+# The basket itself, though, was written down on 2026-07-30 -- BEFORE the August
+# window opened. Held over an August window it is genuine forward evidence, and
+# the only such evidence this record has. So the row is re-dated to the rebalance
+# it actually spanned rather than left on a date whose window it missed.
+#
+# What it is NOT: a book the model picked on 2026-08-03. The names were selected
+# on 2026-07-01 signals. `held_over` says so, and _forward_log refuses to score
+# it against the 08-03 backtest rebalance, whose basket is different.
+_REDATE_FROM = "2026-07-01"
+_REDATE_TO = "2026-08-03"
+
+
+def _redate_held_over_august(snaps):
+    """Move the still-open 2026-07-01 product book onto the August rebalance."""
+    if any(_snap_config(s) == "product" and s.get("book_date") == _REDATE_TO
+           for s in snaps):
+        return snaps                       # already applied, or a real 08-03 book exists
+
+    # The NEWEST 07-01 product row is the book that was actually held; an older
+    # one for the same date is a superseded pre-v5 basket and stays put.
+    candidates = [s for s in snaps if _snap_config(s) == "product"
+                  and s.get("book_date") == _REDATE_FROM]
+    if not candidates:
+        return snaps
+    row = max(candidates, key=lambda s: s.get("logged_at") or "")
+
+    row["book_date"] = _REDATE_TO
+    row["held_over"] = True
+    row["held_over_from"] = _REDATE_FROM
+    row["held_over_note"] = (
+        "Selected on 2026-07-01 signals and written down 2026-07-30. The 2026-08-03 "
+        "rebalance did not run, so this basket was the live position for the whole "
+        "August window — forward evidence for that window, but not a book the model "
+        "re-picked on 2026-08-03.")
+    try:
+        os.makedirs(os.path.dirname(SNAPSHOT_PATH), exist_ok=True)
+        with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+            json.dump(snaps, f, indent=2)
+        _log.info("forward record: re-dated the held-over book %s -> %s",
+                  _REDATE_FROM, _REDATE_TO)
+    except OSError:
+        _log.warning("forward record: could not persist the re-date", exc_info=True)
+    return snaps
 
 
 def _snap_config(s):
@@ -561,7 +619,45 @@ def _snap_config(s):
     return s.get("config", "product")
 
 
-def _forward_log(snaps, full_log, cfg, book_date):
+def _score_basket_at(pan, data, book_date, tickers):
+    """Realized equal-weight return of an ARBITRARY basket at rebalance `book_date`.
+
+    Needed because a held-over book is not the book the model picked at that
+    rebalance, so its return cannot be read off the backtest log row -- that row
+    carries the re-picked basket. The panel holds every eligible name's realized
+    forward return for the window, so the held basket can be scored over the
+    SAME window on the SAME data, which is the only way the comparison is
+    apples-to-apples.
+
+    Returns (edge_ret, sp_ret) or None when the window has not closed yet.
+    """
+    try:
+        want = {str(t).upper() for t in (tickers or [])}
+        if not want:
+            return None
+        bd = pd.Timestamp(book_date)
+        hits = [i for i, d in enumerate(pan.bdates) if pd.Timestamp(d) == bd]
+        if not hits:
+            return None                      # not a closed rebalance on this grid
+        i = hits[0]
+        fwd = pan.panels[i].set_index("company_key")["fwd_ret"]
+        rets = []
+        for ck in fwd.index:
+            tk, _nm, _sec = _meta(data, ck)
+            if str(tk).upper() in want:
+                v = float(fwd.get(ck, float("nan")))
+                if v == v:
+                    rets.append(v)
+        if not rets:
+            return None
+        sp = float(pan.spxf[i]) if pan.spxf[i] == pan.spxf[i] else 0.0
+        return float(np.mean(rets)), sp, len(rets)
+    except Exception:                        # never let scoring break the page
+        _log.warning("held-over scoring failed for %s", book_date, exc_info=True)
+        return None
+
+
+def _forward_log(snaps, full_log, cfg, book_date, score_basket=None):
     """The GENUINELY FORWARD record: one entry per rebalance this system actually
     observed in real time, newest last.
 
@@ -615,7 +711,28 @@ def _forward_log(snaps, full_log, cfg, book_date):
         # out-of-sample evidence". Kept visible for provenance, never scored --
         # the same treatment STRANDED and SUPERSEDED already get.
         backfilled = _logged_late(bd, s.get("logged_at"))
+
+        # HELD OVER: this basket was carried into a rebalance it was not picked
+        # at, because the rebalance did not run. Joining the matched log row's
+        # return would post the return of the basket the model WOULD have picked
+        # -- a number for a portfolio nobody held, printed next to the tickers
+        # that actually were. So the row is scored on its own names over the same
+        # window instead, and says which it is.
+        held_over = bool(s.get("held_over"))
+        held_score = None
+        if held_over and score_basket is not None and not is_open:
+            held_score = score_basket(bd, s.get("tickers") or [])
         closed = match or {}
+        if held_over:
+            # Never inherit the re-picked basket's numbers, even if scoring the
+            # held names failed -- None reads as "not scored", which is true.
+            closed = dict(closed)
+            closed["holdings"] = None
+            if held_score:
+                closed["edge_ret"], closed["sp_ret"], _n = held_score
+                closed["excess"] = closed["edge_ret"] - closed["sp_ret"]
+            else:
+                closed["edge_ret"] = closed["sp_ret"] = closed["excess"] = None
         out.append({
             "book_date": bd,
             "closes": closed.get("closes"),
@@ -629,6 +746,15 @@ def _forward_log(snaps, full_log, cfg, book_date):
                        "BACKFILLED" if backfilled else
                        ("OPEN" if is_open else "CLOSED")),
             "spec_sig": sig,
+            # Carried as a FLAG rather than a status. The row is genuinely
+            # forward -- the basket was written down before this window opened --
+            # so it belongs in the hit rate and the average excess, which a
+            # separate status value would have quietly excluded it from. The flag
+            # is what the page labels; the note says what it means.
+            "held_over": held_over or None,
+            "held_over_from": s.get("held_over_from"),
+            "held_over_note": s.get("held_over_note"),
+            "held_over_n_priced": (held_score[2] if held_score else None),
             "stranded_reason": (
                 "replaced by a later book for the same date after a change to the "
                 "selection rules — kept as a record of what was written down, but "
@@ -870,7 +996,9 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
         vsnaps = [s for s in snaps if _snap_config(s) == viewed_cfg]
         # built off full_log (not the window-trimmed `log`) so a short viewing
         # window can never silently truncate the forward record
-        forward_log = _forward_log(snaps, full_log, viewed_cfg, book_date)
+        forward_log = _forward_log(
+            snaps, full_log, viewed_cfg, book_date,
+            score_basket=lambda bd, tks: _score_basket_at(pan, data, bd, tks))
         forward_stats = _forward_stats(forward_log)
 
         # DAILY MARK of the open book against the S&P. The forward log only

@@ -117,3 +117,64 @@ hashes that file, so the shipped panel is instantly stale and every cold start
 rebuilds it — silently, because a stale panel is a cache miss and not an error.
 `publish_bundle.py` now refuses to ship a bundle whose panel filename doesn't
 match the current spec, or whose `edge_lib.py` has uncommitted changes.
+
+## The monthly rebalance runs itself (2026-09-01)
+
+The model's clock is the first **trading** day of every month. Until now nothing
+ran it: the data bundle was refreshed by hand, so after 2026-07-30 the panel
+froze, the **2026-08-03 rebalance never happened**, and the site kept presenting
+the 2026-07-01 book as current for a full month. `.github/workflows/monthly-rebalance.yml`
+is the fix.
+
+### What it does
+
+1. `sharadar_ingest.py all` — pull the bulk tables (~1.7GB), rebuild the artifact
+2. `make_data_bundle.py` — trim, **precompute the panel**, zip (~340MB)
+3. `publish_bundle.py` — replace `data_bundle.zip` on the `data-v2-sharadar` release
+4. `scripts/post_deploy.py` — trigger the Render deploy, **wait for `/api/meta`'s
+   `built_at` to move**, then `GET /api/edge_tracker` (this is what writes the
+   forward-record snapshot) and `POST /api/sync_vision`
+
+Steps 1–3 need credentials; step 4 needs none — the deploy hook is an unguessable
+URL and both app endpoints are unauthenticated.
+
+### Secrets to set
+
+Repo → Settings → Secrets and variables → Actions:
+
+| Secret | Where to get it |
+| --- | --- |
+| `NASDAQ_DATA_LINK_API_KEY` | your Sharadar seat key |
+| `RENDER_DEPLOY_HOOK` | Render → quantmodel → Settings → Deploy Hook |
+
+The release upload uses the built-in `GITHUB_TOKEN` (`permissions: contents: write`).
+
+### Why a gate instead of a cron expression
+
+Cron cannot say "first trading day" — the 1st is a weekend or holiday about a
+third of the time. So the workflow wakes every weekday of the first eight days at
+21:30 UTC and `scripts/rebalance_gate.py` decides.
+
+It waits for the **entry bar**, not the book date. `edge_lib` prices entry at the
+t+1 close, so the panel cannot produce a live book for rebalance date `d` until
+the session *after* `d` has closed. Running earlier yields an empty live panel.
+
+### Known residual: a Friday book date
+
+`_logged_late` marks a book written down more than **3 calendar days** after its
+own date as `BACKFILLED` — kept for provenance, never scored. The job normally
+fires on the entry bar's evening, a 1-day lag. But when a month's first trading
+day is a **Friday**, the entry bar is the following Monday and the earliest
+possible lag is already 3. If Sharadar has not published Monday's close by
+21:30 UTC, the retry lands Tuesday at lag 4 and the row is `BACKFILLED`.
+
+The gate prints a `::warning::` when this happens rather than letting it pass
+silently. The real fix is to measure lateness in **trading sessions** rather than
+calendar days — logging after the entry bar's close but before the next close
+carries zero hindsight regardless of how many weekend days intervene — but that
+changes an integrity guard, so it is left as a deliberate follow-up.
+
+### Running it by hand
+
+Actions → monthly-rebalance → Run workflow. `force` skips the gate; `skip_deploy`
+builds and publishes the bundle without touching production.
