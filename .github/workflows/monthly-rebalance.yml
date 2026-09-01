@@ -65,6 +65,10 @@ jobs:
       RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      # SEP regenerates after the US close -- which is when this runs. The
+      # first run died after 3 min of polling. 90 min sits well inside the
+      # 180-min job timeout and costs nothing when the export is already fresh.
+      SHARADAR_EXPORT_WAIT_S: "5400"
 
     steps:
       - uses: actions/checkout@v4

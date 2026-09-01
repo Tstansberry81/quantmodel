@@ -33,6 +33,7 @@ Run:
 from __future__ import annotations
 
 import io
+import os
 import pickle
 import sys
 import time
@@ -98,10 +99,25 @@ MCAP_KEEP = 2e8
 # ---------------------------------------------------------------------------
 # download
 # ---------------------------------------------------------------------------
+# How long to wait for Nasdaq to finish regenerating a bulk export.
+#
+# This was a bare `range(30)` with a 10s sleep -- a FIVE MINUTE ceiling, which is
+# fine for a person at a terminal and far too short for SEP. SEP is ~55M rows and
+# Nasdaq regenerates it after the US close, which is exactly when the monthly
+# rebalance runs: the first unattended run died on "SEP: export never became
+# fresh" after 3 minutes of polling, with nothing wrong except impatience.
+#
+# The default is raised to 15 minutes; the unattended job sets it far higher
+# (the workflow has a 180-minute timeout to sit inside).
+_EXPORT_WAIT_S = int(os.environ.get("SHARADAR_EXPORT_WAIT_S", "900"))
+_EXPORT_POLL_S = 10
+
+
 def _export_link(sc: S.SharadarClient, table: str) -> str:
     """Ask for the bulk export and return the S3 link once it's fresh."""
     url = f"{S.BASE_URL}/SHARADAR/{table}.csv"
-    for attempt in range(30):
+    started = time.time()
+    while True:
         r = sc._session.get(url, params={"api_key": sc.api_key,
                                          "qopts.export": "true"}, timeout=90)
         if r.status_code != 200:
@@ -111,9 +127,18 @@ def _export_link(sc: S.SharadarClient, table: str) -> str:
         link, status = parts[0], (parts[1] if len(parts) > 1 else "")
         if link.startswith("http") and status.strip() == "fresh":
             return link
-        print(f"  {table}: export {status or 'regenerating'} — waiting…", flush=True)
-        time.sleep(10)
-    raise S.SharadarError(f"{table}: export never became fresh")
+        waited = time.time() - started
+        if waited + _EXPORT_POLL_S > _EXPORT_WAIT_S:
+            raise S.SharadarError(
+                f"{table}: export never became fresh after {waited/60:.0f} min. "
+                f"Nasdaq regenerates the bulk export on its own schedule and SEP "
+                f"is the slow one; raise SHARADAR_EXPORT_WAIT_S (currently "
+                f"{_EXPORT_WAIT_S}s) or retry later.")
+        # Elapsed time in the line: "waiting..." forever reads like a hang, and
+        # the whole reason this failed was nobody knowing how long was left.
+        print(f"  {table}: export {status or 'regenerating'} — waited "
+              f"{waited/60:.1f}/{_EXPORT_WAIT_S/60:.0f} min…", flush=True)
+        time.sleep(_EXPORT_POLL_S)
 
 
 def download(tables=BULK_TABLES, force: bool = False) -> None:
