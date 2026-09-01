@@ -124,6 +124,7 @@ def window_k(window: str, n_days: int) -> int:
 class EdgePanel:
     def __init__(self, panels, bdates, spxf, ndxf, ma200_on, mkt_daily, sectors, hold,
                  live_panel=None, live_date=None, live_regime_on=True,
+                 live_entry_pending=False, live_entry_date=None,
                  live_spx_todate=float("nan"), next_dates=None):
         self.panels = panels          # list[DataFrame] per rebalance
         self.bdates = bdates          # DatetimeIndex
@@ -153,6 +154,13 @@ class EdgePanel:
         self.live_panel = live_panel              # DataFrame | None
         self.live_date = live_date                # Timestamp | None
         self.live_regime_on = live_regime_on      # market above its 200dMA at live_date
+        # True when the live book is SELECTED but its t+1 entry bar has not
+        # closed. The names are final; the price they are bought at is not.
+        self.live_entry_pending = live_entry_pending
+        # The t+1 close the live book is bought at. The live MARK must start
+        # here, not on the book date: entering at the book date's close would
+        # buy at a price the selection already saw.
+        self.live_entry_date = live_entry_date
         self.live_spx_todate = live_spx_todate    # S&P return since live_date
 
 
@@ -260,6 +268,8 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
     panels, bdates, spxf, ndxf, ma200_on = [], [], [], [], []
     next_dates = []
     live_rows, live_date, live_regime_on, live_spx_todate = None, None, True, np.nan
+    live_entry_pending = False        # book selected, entry bar not closed yet
+    live_entry_date = None            # the t+1 bar the live book is bought at
     use_pit = USE_PIT_UNIVERSE and PIT.is_real_pit()
     spx_end = np.datetime64(pd.Timestamp(spx.index[-1]), "ns")   # sample end, for delist detection
 
@@ -293,11 +303,25 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
             full_fwd = epos > pos and epos + 1 < len(P["arr"])
             if is_live:
                 # No forward window exists yet for the open position. Require the
-                # name to still be trading at the rebalance (so a ticker that died
+                # name to still be trading at the rebalance, so a ticker that died
                 # months ago can't be resurrected into the live book on stale
-                # prices) and to have the t+1 bar the entry is priced at.
-                if P["pidx"][-1] < dt - np.timedelta64(7, "D") or n_fwd < 1:
+                # prices.
+                if P["pidx"][-1] < dt - np.timedelta64(7, "D"):
                     continue
+                # The t+1 bar the entry is priced at may not exist yet: between a
+                # month's first session and the close of the session after it, the
+                # SELECTION is fully determined but the entry price has not
+                # happened. This used to drop every name, so no live book existed
+                # and the site showed last month's until the entry bar closed --
+                # a day late, every month, by construction.
+                #
+                # 12-1 momentum ends 21 sessions back (arr[pos-21]/arr[pos-251]),
+                # so nothing about the ranking is waiting on those bars. Only the
+                # entry price is. Publishing the names now and pricing them at the
+                # next close is what a subscriber can actually trade, and it is
+                # also the strongest possible forward record: the book is written
+                # down ON its own date, at zero lag, before any of its window has
+                # run.
                 full_fwd = False
             elif not full_fwd:
                 # Series ends inside the hold window. Normally skip (the stock
@@ -363,8 +387,14 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
             # so every fundamental in the row was public before the trade.
             for _c, _v in P["funds"].items():
                 row[_c] = asof(P["fidx"], _v, dlag)
-            if is_live:                       # mark the open position to the latest close
-                row["fwd_todate"] = arr[-1] / arr[pos + 1] - 1
+            if is_live:
+                # Mark the open position to the latest close -- but ONLY once the
+                # entry bar exists. With no t+1 bar there is no price we bought at,
+                # so there is no return to show: arr[pos+1] would be out of bounds,
+                # and marking from arr[pos] instead would silently invent a
+                # position entered at a close the book was selected on.
+                row["entry_px_pending"] = bool(n_fwd < 1)
+                row["fwd_todate"] = (arr[-1] / arr[pos + 1] - 1) if n_fwd >= 1 else np.nan
             rows.append(row)
         regime_on = bool(spx.iloc[mpos] > ma200.iloc[mpos]) if not np.isnan(ma200.iloc[mpos]) else True
         if is_live:
@@ -384,7 +414,18 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
                 live_rows = pd.DataFrame(rows)
                 live_date = pd.Timestamp(d)
                 live_regime_on = regime_on
-                live_spx_todate = float(spx.iloc[-1] / spx.iloc[mpos] - 1)
+                # Entry pending => no position is open yet, so there is nothing to
+                # mark the benchmark against either. Reporting the S&P's move from
+                # the book date while the book itself shows no return would put a
+                # spurious excess on the page.
+                live_entry_pending = bool(live_rows["entry_px_pending"].any())
+                # The bar the book is ENTERED at, off the market calendar so it
+                # is one date for the whole book rather than each name's own
+                # next bar. None while pending -- that session has not happened.
+                _after = spx.index[spx.index > pd.Timestamp(d)]
+                live_entry_date = (pd.Timestamp(_after[0]) if len(_after) else None)
+                live_spx_todate = (float(spx.iloc[-1] / spx.iloc[mpos] - 1)
+                                   if not live_entry_pending else np.nan)
             else:
                 log.info("no live rebalance for %s: the entry bar (t+1) has not "
                          "closed yet; holding the previous book", pd.Timestamp(d).date())
@@ -409,6 +450,8 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
                      np.array(ma200_on, bool), mret_full, sectors, hold,
                      live_panel=live_rows, live_date=live_date,
                      live_regime_on=live_regime_on, live_spx_todate=live_spx_todate,
+                     live_entry_pending=live_entry_pending,
+                     live_entry_date=live_entry_date,
                      next_dates=pd.DatetimeIndex(next_dates))
 
 

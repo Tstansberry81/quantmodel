@@ -149,30 +149,39 @@ Repo → Settings → Secrets and variables → Actions:
 
 The release upload uses the built-in `GITHUB_TOKEN` (`permissions: contents: write`).
 
-### Why a gate instead of a cron expression
+### Why a gate instead of a cron expression, and why it fires twice
 
 Cron cannot say "first trading day" — the 1st is a weekend or holiday about a
 third of the time. So the workflow wakes every weekday of the first eight days at
 21:30 UTC and `scripts/rebalance_gate.py` decides.
 
-It waits for the **entry bar**, not the book date. `edge_lib` prices entry at the
-t+1 close, so the panel cannot produce a live book for rebalance date `d` until
-the session *after* `d` has closed. Running earlier yields an empty live panel.
+It fires **twice** a month:
 
-### Known residual: a Friday book date
+| phase | when | what happens |
+| --- | --- | --- |
+| `publish` | the month's first session, after the close | the names go out; entry price does not exist yet |
+| `price` | the next session, after the close | the t+1 entry bar lands; the live mark starts |
 
-`_logged_late` marks a book written down more than **3 calendar days** after its
-own date as `BACKFILLED` — kept for provenance, never scored. The job normally
-fires on the entry bar's evening, a 1-day lag. But when a month's first trading
-day is a **Friday**, the entry bar is the following Monday and the earliest
-possible lag is already 3. If Sharadar has not published Monday's close by
-21:30 UTC, the retry lands Tuesday at lag 4 and the row is `BACKFILLED`.
+The split exists because the selection and the entry price become available on
+**different days**. 12-1 momentum is `arr[pos-21] / arr[pos-251]` — it ends 21
+sessions before the book date, so nothing in the ranking is waiting on the book
+date's bar. Only the entry price is, and `edge_lib` prices entry at the t+1 close
+because "you can't compute the whole cross-section AND trade the close it was
+computed from."
 
-The gate prints a `::warning::` when this happens rather than letting it pass
-silently. The real fix is to measure lateness in **trading sessions** rather than
-calendar days — logging after the entry bar's close but before the next close
-carries zero hindsight regardless of how many weekend days intervene — but that
-changes an integrity guard, so it is left as a deliberate follow-up.
+So the book is published on its own date and bought at the next close. That is
+what a subscriber can actually trade, and it makes the forward record's
+`logged_lag_days` **zero** — the book is written down before any of its window
+has run, which is the strongest evidence the record can carry. It also retires
+the Friday-book-date problem: an entry-bar-only schedule could not log a Friday
+book at lag ≤ 3, and publishing on the book date always can.
+
+While the entry bar is pending, every return field is `null`, not `0`:
+`live_entry_pending` on the panel, `entry_px_pending` in the tracker payload, and
+the page says "entry at the &lt;date&gt; close" instead of rendering a flat 0%.
+`live_tracker` is passed `None` in that window — its documented read-only mode —
+so the mark does not start a run and enter at the close the selection was made
+on.
 
 ### Running it by hand
 
