@@ -89,11 +89,22 @@ def log_book(expect_book_date: str = "") -> dict:
     got = t.get("book_date", "")
     print(f"tracker: book_date={got}")
     if expect_book_date and got != expect_book_date:
-        # Loud, but not fatal: when the entry bar exists but the month's first
-        # session does not yet have a full panel row, the model legitimately
-        # still holds the previous book. Saying so beats failing the run.
-        print(f"::warning::expected book_date {expect_book_date}, got {got}. "
-              "The rebalance may not have advanced — check the panel.")
+        # FATAL, and deliberately so. This means the panel did not advance to the
+        # rebalance the gate expected -- almost always because Sharadar had not
+        # published the entry bar by the time we pulled, so `live_date` is None
+        # and _current_book has fallen back to the PREVIOUS rebalance.
+        #
+        # The bundle is already published and the site is already serving, which
+        # is fine: it is serving the book it legitimately still holds. What must
+        # NOT happen is step two -- pushing that stale book to Vision, where it is
+        # presented to subscribers as this month's pick. Publishing the wrong book
+        # is far more expensive than a red run, and tomorrow's scheduled attempt
+        # picks it up at a lag the forward record still scores.
+        raise RuntimeError(
+            f"book_date is {got!r}, expected {expect_book_date!r}. The panel did "
+            "not advance to this month's rebalance (the entry bar is probably not "
+            "in the data yet). NOT syncing to Vision — the next scheduled run "
+            "will retry.")
     fl = t.get("forward_log") or []
     if fl:
         last = fl[-1]
