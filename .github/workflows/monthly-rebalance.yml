@@ -1,0 +1,119 @@
+# Monthly rebalance — the whole chain, unattended.
+#
+# The model's clock is the first TRADING day of every month. Nothing used to run
+# it: the data bundle was refreshed by hand, so the book froze at 2026-07-01 and
+# the 2026-08-03 rebalance never happened while the site kept presenting the July
+# book as current. This is the fix.
+#
+# SCHEDULE. Cron cannot say "first trading day", so this wakes every weekday of
+# the first eight days at 21:30 UTC (17:30 ET, after the close) and
+# scripts/rebalance_gate.py decides. It proceeds only once the ENTRY BAR -- the
+# session after the book date, which is where edge_lib prices entry -- has
+# closed. Normally that is the evening of the second session, a 1-day lag on the
+# forward record.
+#
+# SECRETS (repo settings -> Secrets and variables -> Actions):
+#   NASDAQ_DATA_LINK_API_KEY   Sharadar seat key, for the bulk pull
+#   RENDER_DEPLOY_HOOK         Render -> quantmodel -> Settings -> Deploy Hook URL
+# The release upload uses the built-in GITHUB_TOKEN (contents: write, below).
+#
+# COST. ~1.7GB pulled and a ~340MB asset uploaded, once a month, ~40 min.
+
+name: monthly-rebalance
+
+on:
+  schedule:
+    - cron: "30 21 1-8 * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even if the gate says it is not the day"
+        type: boolean
+        default: false
+      skip_deploy:
+        description: "Build and publish the bundle, but do not redeploy/sync"
+        type: boolean
+        default: false
+      vision_window:
+        description: "Window to publish to Vision"
+        default: "5Y"
+
+# One rebalance at a time. Two overlapping runs would race on the same release
+# asset and could publish a half-written bundle.
+concurrency:
+  group: monthly-rebalance
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # publish_bundle.py replaces the release asset
+
+jobs:
+  rebalance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Sharadar is licensed per seat. The gate in make_data_bundle.py refuses to
+      # bundle it unless this is set, because the artifact must never land
+      # anywhere public. quantmodel is a PRIVATE repo and its release assets are
+      # private too, which is the only reason this is allowed here.
+      ALLOW_LICENSED_BUNDLE: "1"
+      NASDAQ_DATA_LINK_API_KEY: ${{ secrets.NASDAQ_DATA_LINK_API_KEY }}
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"      # matches runtime.txt
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Free disk for the bulk pull
+        # The Sharadar exports are ~1.7GB and the finished bundle ~340MB. The
+        # hosted runner ships ~25GB of preinstalled toolchains this job never
+        # touches; reclaiming them keeps a growing SEP table from ending the run
+        # with a confusing "No space left on device" mid-unzip.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h /
+
+      - name: Decide whether today is the day
+        id: gate
+        env:
+          GATE_FORCE: ${{ inputs.force && '1' || '0' }}
+        run: python scripts/rebalance_gate.py
+
+      - name: Pull Sharadar and rebuild the artifact
+        if: steps.gate.outputs.proceed == 'true'
+        run: python sharadar_ingest.py all
+
+      - name: Build the bundle (precomputes the panel)
+        if: steps.gate.outputs.proceed == 'true'
+        run: python make_data_bundle.py
+
+      - name: Publish the bundle to the release
+        if: steps.gate.outputs.proceed == 'true'
+        run: python publish_bundle.py
+
+      - name: Redeploy, log the book, ship to Vision
+        if: steps.gate.outputs.proceed == 'true' && !inputs.skip_deploy
+        run: |
+          python scripts/post_deploy.py \
+            --book-date "${{ steps.gate.outputs.book_date }}" \
+            --window "${{ inputs.vision_window || '5Y' }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Monthly rebalance"
+            echo ""
+            echo "- proceed: \`${{ steps.gate.outputs.proceed }}\`"
+            echo "- book date: \`${{ steps.gate.outputs.book_date }}\`"
+            echo "- log lag: \`${{ steps.gate.outputs.lag_days }}\` days"
+          } >> "$GITHUB_STEP_SUMMARY"

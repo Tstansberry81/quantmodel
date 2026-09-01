@@ -368,10 +368,26 @@ def _build_edge_panel(hold: int, universe: int, offset_days: int,
             rows.append(row)
         regime_on = bool(spx.iloc[mpos] > ma200.iloc[mpos]) if not np.isnan(ma200.iloc[mpos]) else True
         if is_live:
-            live_rows = pd.DataFrame(rows)
-            live_date = pd.Timestamp(d)
-            live_regime_on = regime_on
-            live_spx_todate = float(spx.iloc[-1] / spx.iloc[mpos] - 1)
+            # A live rebalance with NO ROWS is not a live rebalance. Every name is
+            # dropped above when the data ends before the entry bar (`n_fwd < 1`),
+            # which is the normal state between a month's first session and the
+            # close of the session after it.
+            #
+            # live_date used to be set anyway. That split the two readers of this
+            # field: _current_book checks `len(live_panel) > 0` and correctly falls
+            # back to the last backtest rebalance, while _persist_snapshots reads
+            # live_date directly -- so the forward record got a snapshot DATED to
+            # the new month carrying the PREVIOUS month's basket, and the page
+            # showed one date beside the other book. Leaving live_date None keeps
+            # both readers on the same rebalance.
+            if len(rows):
+                live_rows = pd.DataFrame(rows)
+                live_date = pd.Timestamp(d)
+                live_regime_on = regime_on
+                live_spx_todate = float(spx.iloc[-1] / spx.iloc[mpos] - 1)
+            else:
+                log.info("no live rebalance for %s: the entry bar (t+1) has not "
+                         "closed yet; holding the previous book", pd.Timestamp(d).date())
             continue
         panels.append(pd.DataFrame(rows)); bdates.append(pd.Timestamp(d))
         next_dates.append(pd.Timestamp(d_next) if d_next is not None else pd.NaT)
