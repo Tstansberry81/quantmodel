@@ -259,15 +259,42 @@ function renderTotal(t){
     ['Books', fmtN(t.n_books,0), ''],
   ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
 
+  // Each book date opens that book's names: entry close, exit (or latest)
+  // close, and return -- enough to redo the row's number by hand, since the
+  // book's return is the plain average of its names' returns.
   let run = 1;
-  document.querySelector('#totallegs tbody').innerHTML = (t.legs||[]).map(l=>{
+  const fmtPx = v => v==null ? '—' : '$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const tbody = document.querySelector('#totallegs tbody');
+  tbody.innerHTML = (t.legs||[]).map((l,i)=>{
     run *= 1 + l.edge_ret;
     const live = l.status==='OPEN' ? '<span class="small"> live</span>' : '';
-    return `<tr><td>${l.book_date}</td><td class="small">${l.from} → ${l.to}${live}</td>
+    const hs = (l.holdings||[]).slice().sort((a,b)=>(b.ret??-9)-(a.ret??-9));
+    const priced = hs.filter(h=>h.ret!=null);
+    const sum = priced.reduce((a,h)=>a+h.ret,0);
+    const rows = hs.map(h=>`<tr><td><b>${h.ticker}</b></td><td class="small">${h.name||''}</td>
+        <td>${fmtPx(h.entry_px)}</td><td>${fmtPx(h.exit_px)}</td>
+        <td class="${cls(h.ret)}">${sgnPct(h.ret)}</td></tr>`).join('');
+    return `<tr><td><button class="port-toggle" type="button" data-i="${i}" aria-expanded="false">▸ ${l.book_date}</button></td>
+      <td class="small">${l.from} → ${l.to}${live}</td>
       <td class="${cls(l.edge_ret)}">${sgnPct(l.edge_ret)}</td>
       <td class="${cls(l.sp_ret)}">${sgnPct(l.sp_ret)}</td>
-      <td class="${cls(run-1)}">${sgnPct(run-1)}</td></tr>`;
+      <td class="${cls(run-1)}">${sgnPct(run-1)}</td></tr>
+      <tr class="port-row" id="leg-${i}" hidden><td colspan="5">
+        <div class="port-meta">Bought at the ${l.from} close, ${l.status==='OPEN'?'marked to the '+l.to+' close (still held)':'sold at the '+l.to+' close'} · 10% each · prices are dividend-adjusted closes</div>
+        <table class="legtbl"><thead><tr><th>Ticker</th><th>Name</th><th>Bought at</th><th>${l.status==='OPEN'?'Latest':'Sold at'}</th><th>Return</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+        <div class="port-meta">Book return = average of the ${priced.length} names = ${sgnPct(sum)} ÷ ${priced.length} = <b class="${cls(l.edge_ret)}">${sgnPct(l.edge_ret)}</b></div>
+      </td></tr>`;
   }).join('');
+  tbody.querySelectorAll('.port-toggle').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const row=document.getElementById('leg-'+btn.dataset.i);
+      const showing=row.hidden===false;
+      row.hidden=showing;
+      btn.setAttribute('aria-expanded', String(!showing));
+      btn.textContent=(showing?'▸ ':'▾ ')+btn.textContent.replace(/^[▸▾]\s*/,'');
+    });
+  });
 
   document.getElementById('totalmeta').textContent =
     `Compounded, not added: each book's return multiplies the one before it `

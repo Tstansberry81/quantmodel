@@ -117,45 +117,11 @@ first is out-of-sample evidence.</p>
   </div>
 
   <div class="panel">
-    <h2>Forward record <span class="small">— the only out-of-sample evidence</span></h2>
-    <p class="small">A rebalance counts here only if it was <b>written down before its outcome was
-    known</b>. The &ldquo;logged&rdquo; column is the wall-clock time this system first recorded that
-    basket &mdash; that timestamp, not the book date, is what makes a row genuine evidence, so rows that
-    fail the test are marked and excluded rather than quietly counted. The record restarts whenever the
-    model's parameters change, so it is deliberately short.</p>
-    <p class="small">The <b>&ldquo;Nd after&rdquo;</b> note beside a timestamp is the gap between the date a
-    book is <em>dated</em> and the moment it was actually <em>written down</em>. For real forward evidence
-    that gap is zero. A row marked <b>&#9203; backfilled</b> has a large one &mdash; it was recorded after
-    its holding window had already started, so scoring it would report a return over a period that had
-    already happened. Those rows are shown but never scored, and never counted in any total.</p>
-    <p class="small">Every row currently in this table is backfilled, stranded, or superseded, which means
-    <b>the forward record has not scored a single rebalance yet</b>. That is the honest state of it: the
-    solvency screens shipped on 30 July 2026 and reset the record. What <em>is</em> accruing evidence is
-    the live mark above, running from 30 July with the current book &mdash; the first scoreable rebalance
-    closes at the next month-start.</p>
-    <p class="small">A row marked <b>&#8634; superseded</b> was replaced by a later book for the same
-    date after a change to the selection rules &mdash; the 2026-07-01 book was first written down under
-    the pre-solvency-screen model, then re-picked once those screens shipped. The original stays visible
-    because it is a genuine record of what was written down at the time; it is simply no longer what the
-    model holds.</p>
-    <p class="small">A row marked <b>&#8856; stranded</b> was written down under a rebalance clock this
-    model no longer runs, so no closing date exists for it and it can never be scored. Moving to
-    monthly month-start rebalancing on 30 July 2026 stranded the books dated mid-month. They stay
-    visible rather than being deleted &mdash; but they are shown as stranded, not as still open,
-    because a row that can never close is not a live position.</p>
-    <table id="fwdlog">
-      <thead><tr><th>Book date</th><th>Logged</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Basket</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p class="small" id="fwdmeta"></p>
-  </div>
-
-  <div class="panel">
     <h2>Backtest-seeded history <span class="small">— simulated, NOT out-of-sample</span></h2>
     <p class="small">Every rebalance since 1999 rendered as a finished trade. This is useful context
     for how the rules behave across eras, but it is <b>not</b> evidence the model works going forward:
     the rules were chosen already knowing how these periods turned out. Judge the model on the
-    forward record above.</p>
+    forward record &mdash; the total return above.</p>
     <table id="log">
       <thead><tr><th>Opened</th><th>Closes</th><th>Status</th><th>Edge return</th><th>S&amp;P</th><th>Excess</th><th>Portfolio</th></tr></thead>
       <tbody></tbody>

@@ -993,7 +993,18 @@ def finalize(payload: dict) -> dict:
                and spec.get("hold_days") == HOLD)
     live = led["live"] if product else {}
     out["live"] = live
-    out["total_return"] = led.get("total", {}) if product else {}
+    total = led.get("total", {}) if product else {}
+    if total:
+        # Names for the drill-down: the forward ledger only knows tickers.
+        names = {h.get("ticker"): h.get("name")
+                 for e in (payload.get("log") or []) for h in (e.get("holdings") or [])
+                 if h.get("ticker")}
+        names.update({b.get("ticker"): b.get("name")
+                      for b in (payload.get("current_book") or []) if b.get("ticker")})
+        for leg in total.get("legs") or []:
+            leg["holdings"] = [dict(h, name=names.get(h.get("ticker")))
+                               for h in leg.get("holdings") or []]
+    out["total_return"] = total
     out["stats"] = dict(payload.get("stats") or {}, book_is_live=bool(live))
 
     # Entry pending, per the ledger: the newest scoreable book has not been

@@ -109,13 +109,18 @@ def _closed_through(now: _dt.datetime | None = None) -> pd.Timestamp:
     return d if ny.time() >= _CLOSE_FINAL else d - pd.Timedelta(days=1)
 
 
-def _ret(close: pd.DataFrame, sym: str, a: pd.Timestamp, b: pd.Timestamp):
+def _leg(close: pd.DataFrame, sym: str, a: pd.Timestamp, b: pd.Timestamp):
+    """(entry close, exit close, return) for one name; Nones if unpriced."""
     if sym not in close:
-        return None
+        return None, None, None
     p0, p1 = close[sym].get(a), close[sym].get(b)
     if p0 is None or p1 is None or p0 != p0 or p1 != p1 or not p0:
-        return None
-    return float(p1 / p0 - 1.0)
+        return None, None, None
+    return float(p0), float(p1), float(p1 / p0 - 1.0)
+
+
+def _ret(close: pd.DataFrame, sym: str, a: pd.Timestamp, b: pd.Timestamp):
+    return _leg(close, sym, a, b)[2]
 
 
 def score(rows: list[dict], close: pd.DataFrame | None,
@@ -173,12 +178,15 @@ def score(rows: list[dict], close: pd.DataFrame | None,
                 r["closes"] = str(exit_.date())
             r["as_of"] = str(last_mark.date())
             held = r
-        per = [(t, _ret(close, _yf_symbol(t), entry, end)) for t in r.get("tickers") or []]
-        got = [v for _, v in per if v is not None]
+        legs = [(t, *_leg(close, _yf_symbol(t), entry, end)) for t in r.get("tickers") or []]
+        got = [v for *_, v in legs if v is not None]
         sp = _ret(close, bench, entry, end)
         r["n_priced"] = len(got)
         r["exit_date"] = str(end.date())
-        r["holdings"] = [{"ticker": t, "ret": v} for t, v in per]
+        # Adjusted closes at both ends, so each name's return can be checked by
+        # hand: ret = exit_px / entry_px - 1, and the book is their plain mean.
+        r["holdings"] = [{"ticker": t, "entry_px": p0, "exit_px": p1, "ret": v}
+                         for t, p0, p1, v in legs]
         if got and sp is not None:
             r["edge_ret"] = sum(got) / len(got)
             r["sp_ret"] = sp
@@ -253,6 +261,8 @@ def _total(scoreable, close, bench) -> dict:
         lvl_s *= 1 + r["sp_ret"]
         legs.append({"book_date": r["book_date"], "from": r["entry_date"],
                      "to": r["exit_date"], "status": r["status"],
+                     "n_priced": r.get("n_priced"),
+                     "holdings": r.get("holdings") or [],
                      "edge_ret": r["edge_ret"], "sp_ret": r["sp_ret"]})
     return {
         "since": books[0]["entry_date"],
