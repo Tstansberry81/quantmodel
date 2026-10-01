@@ -237,7 +237,7 @@ def _warm_caches():
     t0 = _t.time()
     try:
         _cached_edge_backtest("MAX", _DEFAULT_HOLD, 0.0, 10)  # the default /edge view
-        edge_tracker_lib.tracker_state()                    # tracker shares the panels
+        _cached_tracker(_DEFAULT_HOLD, "MAX", 0.0, 10)       # tracker shares the panels
         app.logger.info("cache warm done in %.0fs", _t.time() - t0)
     except Exception:
         app.logger.exception("cache warm failed")
@@ -329,7 +329,7 @@ def _cached_tracker(hold: int, window: str, mix: float, n: int):
     return _computed(
         ("tr", hold, window, mix, n),
         lambda: edge_tracker_lib.tracker_state(
-            hold=hold, window=window, mix=mix, n=n))
+            hold=hold, window=window, mix=mix, n=n, finalize=False))
 
 
 @app.get("/api/edge_tracker")
@@ -353,7 +353,11 @@ def api_edge_tracker():
         mix = 0.0        # RETIRED gate -- default OFF (ranked negatively on
                          # survivorship-free data); selectable for exploration only
     n = _parse_n(request.args.get("n", 10))
-    return _safe(lambda: _cached_tracker(hold, window, mix, n))
+    # The heavy payload is cached for the process's lifetime; the forward ledger
+    # is not. finalize() rescores every forward row from prices on each request
+    # (prices themselves are cached ~15 min), so the forward record and the
+    # live mark can never again freeze at whatever the process first computed.
+    return _safe(lambda: edge_tracker_lib.finalize(_cached_tracker(hold, window, mix, n)))
 
 
 def _state_paths():

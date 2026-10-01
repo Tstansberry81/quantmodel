@@ -127,6 +127,8 @@ function render(d){
         ? `<span class="small" title="${t.stranded_reason||''}">&#8856; stranded</span>`
         : t.status==='BACKFILLED'
         ? `<span class="small" title="${t.stranded_reason||''}">&#9203; backfilled</span>`
+        : t.status==='PENDING'
+        ? `<span class="small" title="names are final; bought at the ${t.entry_date||'next'} close">◌ entry ${t.entry_date||'next close'}</span>`
         : (open?'<span class="pos">● OPEN</span>':'<span class="small">closed</span>');
       // Surface the gap between "dated" and "written down" on every row. It is
       // the one number that says whether a row is evidence, so it belongs in the
@@ -137,9 +139,9 @@ function render(d){
       return `<tr><td>${t.book_date}</td>
         <td class="small">${(t.logged_at||'').replace('T',' ').replace('Z','')}${lagTxt}</td>
         <td>${badge}</td>
-        <td class="${cls(t.edge_ret ?? (open?lv.edge_ret:null))}">${t.edge_ret!=null?sgnPct(t.edge_ret):(open&&lv.days?sgnPct(lv.edge_ret)+`<span class="small"> live${lv.inception&&lv.inception!==t.book_date?' · from '+lv.inception:''}</span>`:'—')}</td>
-        <td class="${cls(t.sp_ret ?? (open?lv.sp_ret:null))}">${t.sp_ret!=null?sgnPct(t.sp_ret):(open&&lv.days?sgnPct(lv.sp_ret):'—')}</td>
-        <td class="${cls(t.excess ?? (open?lv.excess:null))}">${t.excess!=null?sgnPct(t.excess):(open&&lv.days?sgnPct(lv.excess):'—')}</td>
+        <td class="${cls(t.edge_ret)}">${t.edge_ret!=null?sgnPct(t.edge_ret)+(t.mark_to_market?`<span class="small"> live · since ${t.entry_date}</span>`:''):'—'}</td>
+        <td class="${cls(t.sp_ret)}">${t.sp_ret!=null?sgnPct(t.sp_ret):'—'}</td>
+        <td class="${cls(t.excess)}">${t.excess!=null?sgnPct(t.excess):'—'}</td>
         <td class="small">${(t.tickers||[]).join(' ')}</td></tr>`;
     }).join('')
       : `<tr><td colspan="7" class="small">No forward rebalances recorded yet — the

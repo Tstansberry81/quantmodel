@@ -21,7 +21,7 @@ import pandas as pd
 
 import edge_lib as E
 import edge_data as engine   # self-contained Edge data layer (was qmodel.engine)
-import live_tracker          # daily mark-to-market of the open book vs the S&P
+import forward_ledger        # scores the forward record from ledger + prices
 
 # `log` is a local list inside _paper_log, so the module logger is _log.
 _log = logging.getLogger(__name__)
@@ -968,8 +968,53 @@ def _persist_snapshots(pan, data, mix):
     return snaps
 
 
+def finalize(payload: dict) -> dict:
+    """Apply the forward ledger to a (possibly cached) tracker payload.
+
+    Returns a NEW dict; the cached payload is never mutated. Every forward row
+    is rescored from its own entry close with its own names (forward_ledger),
+    so the open row, the live cards and each name's "since open" all come from
+    one computation and refresh with prices rather than with deploys.
+    """
+    if not payload.get("ok"):
+        return payload
+    out = dict(payload)
+    try:
+        led = forward_ledger.score_live(payload.get("forward_log") or [])
+    except Exception:                                        # noqa: BLE001
+        _log.warning("forward ledger failed; serving unscored rows", exc_info=True)
+        return out
+    flog = led["rows"]
+    out["forward_log"] = flog
+    out["forward_stats"] = _forward_stats(flog)
+
+    spec = payload.get("spec") or {}
+    product = ((payload.get("stats") or {}).get("record") == "product"
+               and spec.get("hold_days") == HOLD)
+    live = led["live"] if product else {}
+    out["live"] = live
+    out["stats"] = dict(payload.get("stats") or {}, book_is_live=bool(live))
+
+    # Entry pending, per the ledger: the newest scoreable book has not been
+    # bought yet. The page says "entry at the <date> close" and shows no number.
+    newest = next((r for r in reversed(flog)
+                   if r.get("status") in ("PENDING", "OPEN", "CLOSED")), None)
+    if newest is not None and newest.get("book_date") == payload.get("book_date"):
+        out["entry_px_pending"] = newest.get("status") == "PENDING"
+        out["entry_date"] = newest.get("entry_date") or payload.get("entry_date")
+
+    # Each name's return since the held book's entry, when the book on the page
+    # IS the held book. A pending book has no return yet: None, not 0.
+    held = led["held"]
+    rets = ({h["ticker"]: h["ret"] for h in (held.get("holdings") or [])}
+            if held and held.get("book_date") == payload.get("book_date") else {})
+    out["current_book"] = [dict(b, ret_todate=rets.get(b.get("ticker")))
+                           for b in (payload.get("current_book") or [])]
+    return out
+
+
 def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
-                  mix: float = GROWTH_MIX) -> dict:
+                  mix: float = GROWTH_MIX, finalize: bool = True) -> dict:
     """Assemble the tracker payload consumed by /api/edge_tracker.
 
     `hold` (21/42/63/126 = 1M/2M/3M/6M) sets the rebalance clock; `window`
@@ -1012,37 +1057,10 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             score_basket=lambda bd, tks: _score_basket_at(pan, data, bd, tks))
         forward_stats = _forward_stats(forward_log)
 
-        # DAILY MARK of the open book against the S&P. The forward log only
-        # resolves at a rebalance, so between them it showed "—" for a month.
-        # Only the PRODUCT book at the shipped clock is tracked: an exploratory
-        # selector combination is not a portfolio anyone holds, and marking one
-        # would start a run that resets the moment the viewer clicks away.
+        # The forward rows' returns and the live mark are NOT computed here.
+        # This payload is cached per process; the ledger is applied on top of
+        # it by finalize(), fresh, every time it is served. See forward_ledger.
         live = {}
-        if hold == HOLD and n == N and mix == GROWTH_MIX:
-            try:
-                # While the entry bar is pending, pass None: that is live_tracker's
-                # documented read-only mode. Handing it the new book instead would
-                # start the run TODAY and enter at the book date's close -- the
-                # close the selection was made on, and a day before the model's own
-                # entry. The run starts when the entry bar exists, not before.
-                #
-                # Inception is then the ENTRY BAR, not the commit date. Those were
-                # the same thing only while books were written down late; now that
-                # a book is logged on its own date at zero lag, the commit date is
-                # one session BEFORE the model buys, and using it would credit the
-                # book with a day of return it never held.
-                _pending = bool(getattr(pan, "live_entry_pending", False))
-                _entry = getattr(pan, "live_entry_date", None)
-                _inception = (str(pd.Timestamp(_entry).date()) if _entry is not None
-                              else _committed_on(forward_log, current_book))
-                live = live_tracker.summary(
-                    live_tracker.state(None if _pending else current_book,
-                                       spec_version="v5",
-                                       committed_on=_inception))
-            except Exception as e:                          # noqa: BLE001
-                # A price-feed problem must never take the tracker page down.
-                print(f"  live tracker unavailable: {type(e).__name__}: {e}")
-                live = {}
 
         stats = {
             "n_snapshots": len(vsnaps),
@@ -1060,7 +1078,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             "book_regime_on": bool(pan.live_regime_on),
             "book_exposure": 1.0 if pan.live_regime_on else REGIME_EXPO,
         }
-        return {
+        payload = {
             "ok": True,
             "book_date": book_date,
             # The book is published on its own date, before the close it is bought
@@ -1068,6 +1086,10 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             # null -- the page must say "entry at the <entry_date> close" rather
             # than render a 0% that looks like a flat day.
             "entry_px_pending": bool(getattr(pan, "live_entry_pending", False)),
+            # What the PANEL (the Sharadar bundle) says. finalize() replaces
+            # entry_px_pending with the ledger's answer for the page; this one
+            # stays as the data-coverage check post_deploy asserts on.
+            "panel_entry_px_pending": bool(getattr(pan, "live_entry_pending", False)),
             "entry_date": (str(pd.Timestamp(pan.live_entry_date).date())
                            if getattr(pan, "live_entry_date", None) is not None else None),
             "window": window,
@@ -1110,6 +1132,7 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             },
             "model_status": MODEL_STATUS,
         }
+        return finalize(payload) if finalize else payload
     except Exception as e:  # surface a clean error to the page
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
 

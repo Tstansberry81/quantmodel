@@ -105,7 +105,7 @@ def log_book(expect_book_date: str = "", phase: str = "") -> dict:
             "not advance to this month's rebalance (the entry bar is probably not "
             "in the data yet). NOT syncing to Vision — the next scheduled run "
             "will retry.")
-    if phase == "price" and t.get("entry_px_pending"):
+    if phase == "price" and t.get("panel_entry_px_pending", t.get("entry_px_pending")):
         # The whole point of the price run. If the entry bar did not make it into
         # the panel, the book stays unpriced and the live mark keeps marking the
         # PREVIOUS basket as if it were current -- the Sep 2026 failure, which
