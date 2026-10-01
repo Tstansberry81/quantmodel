@@ -139,6 +139,11 @@ def main() -> int:
             fh.write(f"book_date={d.get('book_date', '')}\n")
             fh.write(f"lag_days={d.get('lag_days', '')}\n")
             fh.write(f"phase={d.get('phase', '')}\n")
+            # The last bar the Sharadar pull MUST contain for this phase to mean
+            # anything: the book date to publish, the entry bar to price. The
+            # bulk export can report "fresh" and still end a session short --
+            # that is how the 2026-09-01 book sat "entry pending" for a month.
+            fh.write(f"require_date={d.get('entry_bar') or d.get('book_date', '')}\n")
     return 0
 
 
