@@ -142,6 +142,14 @@ def build(window: str = WINDOW, hold: int = HOLD) -> dict:
         "windows": bt["windows"],
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "disclaimer": "Backtest, net of ~10bps costs. Not a forecast or investment advice.",
+        # The forward record's headline number only: every forward book
+        # compounded (forward_ledger._total). Just the figures and their dates --
+        # Vision shows it as one marketing number, so the dates and the S&P
+        # comparison travel with it and the page can never show it bare.
+        "total_return": ({k: (tr.get("total_return") or {}).get(k)
+                          for k in ("edge_ret", "sp_ret", "excess", "since",
+                                    "as_of", "n_books")}
+                         if (tr.get("total_return") or {}).get("n_books") else None),
         # Say where each part came from. The business line is a third party's
         # text; the ranking and sector notes are our own arithmetic. A reader is
         # entitled to know which is which, and neither is a recommendation.
