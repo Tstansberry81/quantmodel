@@ -702,7 +702,16 @@ def _forward_log(snaps, full_log, cfg, book_date, score_basket=None):
         # it; the live book is still open by construction, and the matching log
         # row carries status OPEN in that case.
         is_open = match is None or match.get("status") != "CLOSED"
-        stranded = match is None and known and bd is not None and bd < max(known)
+        # Stranded means "recorded under a clock this model no longer runs" --
+        # judged by the row's OWN clock, not by whether the backtest grid has a
+        # closed row for it yet. The grid lags a full hold: the night a new book
+        # publishes, the previous month's book is neither closed nor live there,
+        # and the old test stranded it (2026-10-01: the 09-01 book vanished from
+        # the ledger and August was marked straight through to October).
+        clock = s.get("clock") or {}
+        on_clock = clock.get("rebal_months") == E.clock_spec(HOLD)["rebal_months"]
+        stranded = (match is None and known and bd is not None and bd < max(known)
+                    and not on_clock)
         # SUPERSEDED: a newer entry exists for the same book date under a
         # different selection spec. The old row is kept -- it is a genuine record
         # of what was written down at the time -- but it is no longer the book,
