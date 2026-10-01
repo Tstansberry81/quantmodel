@@ -105,6 +105,17 @@ first is out-of-sample evidence.</p>
     <p class="small" id="bookmeta"></p>
   </div>
 
+  <div class="panel" id="totalpanel" style="display:none">
+    <h2>Total return <span class="small">— every forward book, compounded</span></h2>
+    <div class="cards" id="totalcards"></div>
+    <div style="position:relative;height:220px;margin:14px 0 6px"><canvas id="totalchart"></canvas></div>
+    <table id="totallegs">
+      <thead><tr><th>Book</th><th>Held</th><th>Edge</th><th>S&amp;P</th><th>Running total</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="small" id="totalmeta"></p>
+  </div>
+
   <div class="panel">
     <h2>Forward record <span class="small">— the only out-of-sample evidence</span></h2>
     <p class="small">A rebalance counts here only if it was <b>written down before its outcome was

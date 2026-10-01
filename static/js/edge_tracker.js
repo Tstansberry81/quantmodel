@@ -93,10 +93,13 @@ function render(d){
     : (spec.n===10 ? '' : ' · exploratory basket size (no forward record)');
   // the book is the position opened at the last rebalance and still held —
   // "since open" is a mark to the latest close, not a finished trade
-  const heldTxt = s.book_is_live
-    ? `Open position — bought at the ${d.book_date} rebalance, still held; "since open" is marked to the latest close`
-    : d.entry_px_pending
+  // Pending first: while a new book awaits its entry close, the PREVIOUS book
+  // is still held and live, so book_is_live alone would call the new names
+  // "bought" a session before they are.
+  const heldTxt = d.entry_px_pending
     ? `Full-spec Edge picks for ${d.book_date}. These names are final; they are bought at the ${d.entry_date||'next'} close, so there is no return to show yet.`
+    : s.book_is_live
+    ? `Open position — bought at the ${d.book_date} rebalance, still held; "since open" is marked to the latest close`
     : `Full-spec Edge picks as of ${d.book_date}`;
   const regimeTxt = s.book_regime_on === false
     ? ` · MARKET BELOW ITS 200-DAY AVERAGE: exposure cut to ${fmtPct(s.book_exposure)}, rest in cash`
@@ -105,6 +108,11 @@ function render(d){
     `${heldTxt} · equal-weight (${fmtPct(1/((d.current_book||[]).length||1))} each) · `
     +`ranked by ${spec.signal} · hold ~${spec.hold_days}d · liquidity ≥ $${fmtN(spec.mcap_floor_bn,0)}B, `
     +`${spec.sector_cap ? `max ${spec.sector_cap} per sector` : 'no sector cap'}${recTxt}${regimeTxt}.`;
+
+  // ---- TOTAL RETURN: every scored forward book, compounded ----
+  // (1+r1)(1+r2)...-1, each book held entry close -> next book's entry close,
+  // the S&P compounded over the same windows. Server-computed (forward_ledger).
+  renderTotal(d.total_return || {});
 
   // ---- FORWARD record (the only out-of-sample evidence) ----
   // Rendered above and apart from the backtest-seeded log below. Mixing them
@@ -235,3 +243,59 @@ document.addEventListener('DOMContentLoaded',()=>{
   });
   run();
 });
+
+
+let TOTAL_CHART = null;
+function renderTotal(t){
+  const panel = document.getElementById('totalpanel');
+  if (!panel) return;
+  if (!t.n_books) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  document.getElementById('totalcards').innerHTML = [
+    ['Edge total', sgnPct(t.edge_ret), cls(t.edge_ret)],
+    ['S&P total', sgnPct(t.sp_ret), cls(t.sp_ret)],
+    ['Excess', sgnPct(t.excess), cls(t.excess)],
+    ['Since', t.since || '—', ''],
+    ['Books', fmtN(t.n_books,0), ''],
+  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+
+  let run = 1;
+  document.querySelector('#totallegs tbody').innerHTML = (t.legs||[]).map(l=>{
+    run *= 1 + l.edge_ret;
+    const live = l.status==='OPEN' ? '<span class="small"> live</span>' : '';
+    return `<tr><td>${l.book_date}</td><td class="small">${l.from} → ${l.to}${live}</td>
+      <td class="${cls(l.edge_ret)}">${sgnPct(l.edge_ret)}</td>
+      <td class="${cls(l.sp_ret)}">${sgnPct(l.sp_ret)}</td>
+      <td class="${cls(run-1)}">${sgnPct(run-1)}</td></tr>`;
+  }).join('');
+
+  document.getElementById('totalmeta').textContent =
+    `Compounded, not added: each book's return multiplies the one before it `
+    + `(e.g. +10% then +10% is +21%). ${t.basis}. Marked to ${t.as_of}.`;
+
+  const ser = t.series || [];
+  const el = document.getElementById('totalchart');
+  if (typeof Chart === 'undefined' || !el || !ser.length) return;
+  if (TOTAL_CHART) TOTAL_CHART.destroy();
+  const css = getComputedStyle(document.documentElement);
+  const muted = (css.getPropertyValue('--muted')||'#8b949e').trim();
+  TOTAL_CHART = new Chart(el, {
+    type: 'line',
+    data: {
+      labels: [t.since, ...ser.map(p=>p.d)],
+      datasets: [
+        {label: 'Edge', data: [0, ...ser.map(p=>p.e*100)], borderColor: '#3fb950',
+         borderWidth: 2, pointRadius: 0, tension: 0},
+        {label: 'S&P 500 (total return)', data: [0, ...ser.map(p=>p.s*100)], borderColor: muted,
+         borderWidth: 1.5, borderDash: [4,3], pointRadius: 0, tension: 0},
+      ]},
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: {mode: 'index', intersect: false},
+      plugins: {legend: {labels: {color: muted, boxWidth: 12}},
+        tooltip: {callbacks: {label: c => `${c.dataset.label}: ${(c.parsed.y>=0?'+':'')}${c.parsed.y.toFixed(1)}%`}}},
+      scales: {
+        x: {ticks: {color: muted, maxTicksLimit: 6}, grid: {display: false}},
+        y: {ticks: {color: muted, callback: v => v+'%'}, grid: {color: 'rgba(139,148,158,.15)'}}},
+    }});
+}

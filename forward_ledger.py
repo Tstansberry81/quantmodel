@@ -129,7 +129,7 @@ def score(rows: list[dict], close: pd.DataFrame | None,
     """
     out = [dict(r) for r in rows]
     if close is None or bench not in close:
-        return {"rows": out, "held": None, "live": {}}
+        return {"rows": out, "held": None, "live": {}, "total": {}}
 
     sessions = close[bench].dropna().index
     final = _closed_through(now)
@@ -177,6 +177,7 @@ def score(rows: list[dict], close: pd.DataFrame | None,
         got = [v for _, v in per if v is not None]
         sp = _ret(close, bench, entry, end)
         r["n_priced"] = len(got)
+        r["exit_date"] = str(end.date())
         r["holdings"] = [{"ticker": t, "ret": v} for t, v in per]
         if got and sp is not None:
             r["edge_ret"] = sum(got) / len(got)
@@ -208,7 +209,63 @@ def score(rows: list[dict], close: pd.DataFrame | None,
                         "s": round(float(s[d]), 6)} for d in path.index[1:]],
             "basis": BASIS,
         }
-    return {"rows": out, "held": held, "live": live}
+    return {"rows": out, "held": held, "live": live,
+            "total": _total(scoreable, close, bench)}
+
+
+def _path(close, tickers, bench, a, b):
+    """Daily equal-weight buy-and-hold path of one book from its entry close a
+    to b, and the benchmark's, both as returns since a."""
+    syms = [s for s in (_yf_symbol(t) for t in tickers) if s in close]
+    win = close.loc[(close.index >= a) & (close.index <= b), syms + [bench]]
+    base = win.iloc[0]
+    e = (win[syms] / base[syms] - 1.0).mean(axis=1, skipna=True)
+    s = win[bench] / base[bench] - 1.0
+    return e, s
+
+
+def _total(scoreable, close, bench) -> dict:
+    """TOTAL RETURN of the forward record: every scored book, compounded.
+
+    Book k is held from its entry close to book k+1's entry close, so the
+    windows join end to end with no gap and no overlap, and growth compounds:
+    (1 + r1) * (1 + r2) * ... - 1. The benchmark is compounded over exactly the
+    same windows. Unscored rows (pending, backfilled, stranded, superseded) add
+    nothing -- a window the record does not score is not in the total either.
+    The daily series carries each book's own intra-month path on top of the
+    level the books before it ended at.
+    """
+    books = [r for r in scoreable
+             if r.get("status") in SCOREABLE and r.get("edge_ret") is not None]
+    if not books:
+        return {}
+    lvl_e = lvl_s = 1.0
+    series, legs = [], []
+    for r in books:
+        a, b = pd.Timestamp(r["entry_date"]), pd.Timestamp(r["exit_date"])
+        e, s = _path(close, r.get("tickers") or [], bench, a, b)
+        for d in e.index[1:]:
+            series.append({"d": str(d.date()),
+                           "e": round(lvl_e * (1 + float(e[d])) - 1, 6),
+                           "s": round(lvl_s * (1 + float(s[d])) - 1, 6)})
+        # Chain on the ROW's return so the total agrees with the table exactly.
+        lvl_e *= 1 + r["edge_ret"]
+        lvl_s *= 1 + r["sp_ret"]
+        legs.append({"book_date": r["book_date"], "from": r["entry_date"],
+                     "to": r["exit_date"], "status": r["status"],
+                     "edge_ret": r["edge_ret"], "sp_ret": r["sp_ret"]})
+    return {
+        "since": books[0]["entry_date"],
+        "as_of": books[-1]["exit_date"],
+        "edge_ret": lvl_e - 1,
+        "sp_ret": lvl_s - 1,
+        "excess": (lvl_e - 1) - (lvl_s - 1),
+        "n_books": len(books),
+        "legs": legs,
+        "series": series,
+        "basis": "each book's return compounded in order, entry close to the "
+                 "next book's entry close; " + BASIS,
+    }
 
 
 def score_live(rows: list[dict], bench: str = config.BENCH_SP500) -> dict:
