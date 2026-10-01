@@ -37,6 +37,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sys
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -105,7 +106,12 @@ def decide(today: pd.Timestamp) -> dict:
 
 
 def main() -> int:
-    today = pd.Timestamp(os.environ.get("GATE_TODAY") or dt.date.today())
+    # The session's date in NEW YORK, not the runner's UTC date. GitHub starts
+    # the 21:30 UTC cron hours late (00:40 UTC by late Sep 2026); a UTC date
+    # then lands on the NEXT day, the publish run sees "no sessions yet", the
+    # price run sees the wrong day, and the whole month is skipped silently.
+    today = pd.Timestamp(os.environ.get("GATE_TODAY")
+                         or dt.datetime.now(ZoneInfo("America/New_York")).date())
     forced = os.environ.get("GATE_FORCE", "").strip() == "1"
 
     try:
