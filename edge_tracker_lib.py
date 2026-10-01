@@ -993,6 +993,7 @@ def finalize(payload: dict) -> dict:
                and spec.get("hold_days") == HOLD)
     live = led["live"] if product else {}
     out["live"] = live
+    out["total_return"] = led.get("total", {}) if product else {}
     out["stats"] = dict(payload.get("stats") or {}, book_is_live=bool(live))
 
     # Entry pending, per the ledger: the newest scoreable book has not been
