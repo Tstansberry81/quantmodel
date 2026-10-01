@@ -329,7 +329,7 @@ def _cached_tracker(hold: int, window: str, mix: float, n: int):
     return _computed(
         ("tr", hold, window, mix, n),
         lambda: edge_tracker_lib.tracker_state(
-            hold=hold, window=window, mix=mix, n=n, finalize=False))
+            hold=hold, window=window, mix=mix, n=n, ledger=False))
 
 
 @app.get("/api/edge_tracker")

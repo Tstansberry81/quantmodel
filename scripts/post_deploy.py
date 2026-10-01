@@ -127,7 +127,10 @@ def sync_vision(window: str = "5Y") -> dict:
     r = _req(f"{BASE}/api/sync_vision", method="POST", body={"window": window},
              timeout=300)
     pushed = r.get("pushed")
-    if pushed is False:
+    # Anything but an explicit pushed=True is a failure. Checking only for
+    # `pushed is False` let {"ok": false, "reason": ...} -- no `pushed` key at
+    # all -- report "pushed" and pass the run with Vision never updated.
+    if pushed is not True:
         raise RuntimeError(f"vision sync did not push: {r.get('reason')!r}. "
                            "Check VISION_GITHUB_TOKEN on the Render service.")
     print(f"vision: pushed — {json.dumps(r)[:300]}")

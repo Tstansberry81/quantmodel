@@ -1026,7 +1026,7 @@ def finalize(payload: dict) -> dict:
 
 
 def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
-                  mix: float = GROWTH_MIX, finalize: bool = True) -> dict:
+                  mix: float = GROWTH_MIX, ledger: bool = True) -> dict:
     """Assemble the tracker payload consumed by /api/edge_tracker.
 
     `hold` (21/42/63/126 = 1M/2M/3M/6M) sets the rebalance clock; `window`
@@ -1144,7 +1144,10 @@ def tracker_state(hold: int = HOLD, window: str = "MAX", n: int = N,
             },
             "model_status": MODEL_STATUS,
         }
-        return finalize(payload) if finalize else payload
+        # `ledger`, not `finalize`: a parameter named after the function shadowed
+        # it, and every default call (export_vision) died on "'bool' object is
+        # not callable" while the page -- which passes False -- looked fine.
+        return finalize(payload) if ledger else payload
     except Exception as e:  # surface a clean error to the page
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
 
