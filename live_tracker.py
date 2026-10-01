@@ -105,11 +105,16 @@ def _save(state: dict) -> None:
         log.warning("could not write live tracker state", exc_info=True)
 
 
-def _closes(tickers: list[str], days: int = 10):
-    """Latest daily closes for `tickers`. Returns a DataFrame or None."""
+def _closes(tickers: list[str], days: int = 10, start: str | None = None):
+    """Daily closes for `tickers` -- the last `days`, or everything since `start`.
+    Returns a DataFrame or None."""
     import yfinance as yf
-    df = yf.download(tickers, period=f"{days}d", interval="1d",
-                     progress=False, auto_adjust=True)
+    if start:
+        df = yf.download(tickers, start=start, interval="1d",
+                         progress=False, auto_adjust=True)
+    else:
+        df = yf.download(tickers, period=f"{days}d", interval="1d",
+                         progress=False, auto_adjust=True)
     close = df["Close"] if "Close" in df else None
     if close is None or close.empty:
         return None
@@ -187,13 +192,33 @@ def state(book: list[dict] | None = None, spec_version: str = "",
             if age < _MIN_REFRESH_S and st.get("marks"):
                 return st
 
-        close = _closes(list(st["entry"]) + [st.get("benchmark", config.BENCH_SP500)])
+        # Fetch from INCEPTION and re-read the entry close off the same series.
+        # auto_adjust rescales history at every ex-dividend date, so an entry
+        # price saved on day one and compared against a later adjusted close
+        # drops every dividend paid since -- a price return measured against a
+        # TOTAL-return benchmark, biased against the model. The stored `entry`
+        # stays as the record and the fallback if inception's bar is missing.
+        inc = st.get("inception")
+        bench = st.get("benchmark", config.BENCH_SP500)
+        close = _closes(list(st["entry"]) + [bench],
+                        start=(str((_pd.Timestamp(inc) - _pd.Timedelta(days=7)).date())
+                               if inc else None))
         if close is None:
             return st
         last = close.index[-1]
+        base = (close.index[close.index <= _pd.Timestamp(inc)][-1]
+                if inc and (close.index <= _pd.Timestamp(inc)).any() else None)
+
+        def _entry_px(t, stored):
+            if base is not None and t in close:
+                p = float(close[t].loc[base])
+                if p == p and p:
+                    return p
+            return stored
 
         rets = []
         for t, p0 in st["entry"].items():
+            p0 = _entry_px(t, p0)
             if t in close:
                 p1 = float(close[t].loc[last])
                 if p1 == p1 and p0:
@@ -201,15 +226,14 @@ def state(book: list[dict] | None = None, spec_version: str = "",
         if not rets:
             return st
         edge = sum(rets) / len(rets)              # equal weight, no rebalancing
-        spx = float(close[st.get("benchmark", config.BENCH_SP500)].loc[last])
-        sp = spx / st["entry_spx"] - 1.0
+        spx = float(close[bench].loc[last])
+        sp = spx / _entry_px(bench, st["entry_spx"]) - 1.0
 
         # Trading sessions from inception through this bar, counted off the price
         # index rather than off how many marks we happen to have stored. Those
         # are different quantities: len(marks) measures OUR uptime, not how long
         # the position has been held. A process that missed a day, or restarted,
         # would under-report the holding period and call day 3 "day 1".
-        inc = st.get("inception")
         sessions = int((close.index >= _pd.Timestamp(inc)).sum()) if inc else len(rets)
 
         mark = {"date": str(last.date()), "edge": edge, "sp": sp,

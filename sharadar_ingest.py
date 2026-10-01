@@ -166,6 +166,61 @@ def download(tables=BULK_TABLES, force: bool = False) -> None:
         print(f"[ok  ] {t}: {out.stat().st_size/1e6:.0f} MB")
 
 
+# How long to keep asking the API for a bar the bulk export does not have yet.
+_SEP_TOPUP_WAIT_S = int(os.environ.get("SEP_TOPUP_WAIT_S", "3600"))
+_SEP_TOPUP_POLL_S = 120
+
+
+def _ensure_sep_through(sep: pd.DataFrame, eligible: set) -> pd.DataFrame:
+    """Make the price table reach SEP_REQUIRE_DATE, or fail the build.
+
+    The bulk export reports "fresh" when it matches Nasdaq's LAST regeneration,
+    not when it holds today's bar. On 2026-09-02 the price run pulled an export
+    that ended on 09-01: every name in the 09-01 book had no bar after its book
+    date, the panel marked the whole book `entry_px_pending`, and nothing failed.
+    The site then showed the book as unpriced -- and marked the previous basket
+    in its place -- for the entire month.
+
+    So: if the export ends short, top up the missing days from the paged API
+    (same table, same `closeadj`), polling until Nasdaq posts the bar. If it
+    never does, raise. A red run is recoverable; a green run that ships an
+    unpriced book is what hid this for a month.
+    """
+    need = os.environ.get("SEP_REQUIRE_DATE", "").strip()
+    if not need:
+        return sep
+    need_ts = pd.Timestamp(need)
+    have = sep["date"].max()
+    print(f"      SEP ends {have.date()}; this run needs {need_ts.date()}")
+    if have >= need_ts:
+        return sep
+
+    sc = S.SharadarClient()
+    started = time.time()
+    while True:
+        new = sc._get_table("SEP", {
+            "date.gt": str(have.date()),
+            "qopts.columns": "ticker,date,closeadj",
+        })
+        if not new.empty:
+            new = new[new["ticker"].isin(eligible)].dropna(subset=["date", "closeadj"])
+        if not new.empty and new["date"].max() >= need_ts:
+            print(f"      topped up {len(new):,} rows from the API "
+                  f"({new['date'].min().date()} .. {new['date'].max().date()})")
+            return (pd.concat([sep, new[["ticker", "date", "closeadj"]]],
+                              ignore_index=True)
+                      .drop_duplicates(["ticker", "date"], keep="last"))
+        waited = time.time() - started
+        if waited + _SEP_TOPUP_POLL_S > _SEP_TOPUP_WAIT_S:
+            raise S.SharadarError(
+                f"SEP has no {need_ts.date()} bar after {waited/60:.0f} min of "
+                f"polling (export ends {have.date()}). Refusing to build a bundle "
+                f"that would leave the book unpriced; re-run once Nasdaq posts it.")
+        print(f"      SEP {need_ts.date()} not posted yet — waited "
+              f"{waited/60:.0f}/{_SEP_TOPUP_WAIT_S/60:.0f} min…", flush=True)
+        time.sleep(_SEP_TOPUP_POLL_S)
+
+
 def _read_zip_csv(table: str, usecols=None, dtype=None) -> pd.DataFrame:
     """Read the single CSV inside a bulk-export zip."""
     zp = RAW / f"{table}.zip"
@@ -322,6 +377,7 @@ def build(min_history: int = 260) -> dict:
     sep["date"] = pd.to_datetime(sep["date"], errors="coerce")
     sep = sep.dropna(subset=["date", "closeadj"])
     print(f"      {len(sep):,} price rows, {sep['ticker'].nunique():,} tickers")
+    sep = _ensure_sep_through(sep, eligible)
 
     # Daily point-in-time valuation, resampled to month-end. Full daily
     # resolution for 7k names would add gigabytes to the artifact for no gain:

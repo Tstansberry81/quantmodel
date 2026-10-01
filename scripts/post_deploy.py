@@ -80,7 +80,7 @@ def wait_for_new_build(before: str, minutes: int) -> str:
         "still serving the previous bundle — check Render events for oomKilled.")
 
 
-def log_book(expect_book_date: str = "") -> dict:
+def log_book(expect_book_date: str = "", phase: str = "") -> dict:
     """GET the tracker, which writes the forward-record snapshot as a side effect."""
     print("tracker: requesting (this writes the forward-record snapshot)…")
     t = _req(f"{BASE}/api/edge_tracker?window=MAX", timeout=300)
@@ -105,6 +105,15 @@ def log_book(expect_book_date: str = "") -> dict:
             "not advance to this month's rebalance (the entry bar is probably not "
             "in the data yet). NOT syncing to Vision — the next scheduled run "
             "will retry.")
+    if phase == "price" and t.get("entry_px_pending"):
+        # The whole point of the price run. If the entry bar did not make it into
+        # the panel, the book stays unpriced and the live mark keeps marking the
+        # PREVIOUS basket as if it were current -- the Sep 2026 failure, which
+        # passed green and went unnoticed for a month. Fail loudly instead.
+        raise RuntimeError(
+            f"book {got} is still entry_px_pending after the price run (entry "
+            f"bar {t.get('entry_date')!r}). The data does not reach the entry "
+            "bar; re-run with force once Sharadar has posted it.")
     fl = t.get("forward_log") or []
     if fl:
         last = fl[-1]
@@ -129,6 +138,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--book-date", default="", help="book date the gate expects")
     ap.add_argument("--window", default="5Y", help="window to publish to Vision")
+    ap.add_argument("--phase", default="", help="gate phase: publish | price")
     ap.add_argument("--wait-minutes", type=int, default=45)
     ap.add_argument("--skip-deploy", action="store_true")
     args = ap.parse_args()
@@ -145,7 +155,7 @@ def main() -> int:
         trigger_deploy(hook)
         wait_for_new_build(before, args.wait_minutes)
 
-    log_book(args.book_date)
+    log_book(args.book_date, args.phase)
     sync_vision(args.window)
     print("post_deploy: done — book logged and Vision updated.")
     return 0
