@@ -75,7 +75,10 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12.7"      # matches runtime.txt
+          # Minor-pinned, not patch-pinned: the runner image moves (ubuntu-latest
+          # became 26.04, which ships no 3.12.7) and an exact patch then fails
+          # setup. Same 3.12 ABI as runtime.txt on Render.
+          python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
